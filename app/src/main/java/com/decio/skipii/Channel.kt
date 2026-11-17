@@ -81,8 +81,7 @@ import kotlin.math.roundToInt
 val LocalChannelOpener = staticCompositionLocalOf<(String) -> Unit> { {} }
 
 /** The channel's id when its address already says it (/channel/UC…), so its page can load alongside NewPipe's details. */
-private fun channelIdIn(url: String): String? =
-    url.substringAfter("/channel/", "").takeWhile { it != '/' && it != '?' }.takeIf { it.startsWith("UC") && it.length == 24 }
+private fun channelIdIn(url: String): String? = TekuZone.usernameFromUrl(url)
 
 /**
  * A channel page (GitHub #53, Derek picked A "Underline tabs" in docs/design/channel-page.html):
@@ -415,16 +414,18 @@ private fun ChannelProfile(state: ChannelState, d: ChannelDetails, onMessage: (S
                 if (d.subscribers > 0) Text(subscribersLine(d.subscribers), color = c.onSurfaceVariant, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             }
         }
-        state.subscribed?.let { subscribed ->
-            Spacer(Modifier.height(14.dp))
-            SubscribeWithBell(
-                subscribed,
-                channel = BellChannel(d.id, d.name, d.avatar),
-                onSubscribe = { state.toggleSubscribe(onMessage) },
-                onMessage = onMessage,
-                modifier = Modifier.fillMaxWidth(),
-                wide = true,
-            )
+        if (!Account.isSelf(d.id)) {
+            state.subscribed?.let { subscribed ->
+                Spacer(Modifier.height(14.dp))
+                SubscribeWithBell(
+                    subscribed,
+                    channel = BellChannel(d.id, d.name, d.avatar),
+                    onSubscribe = { state.toggleSubscribe(onMessage) },
+                    onMessage = onMessage,
+                    modifier = Modifier.fillMaxWidth(),
+                    wide = true,
+                )
+            }
         }
         if (d.description.isNotBlank()) {
             Spacer(Modifier.height(12.dp))
@@ -658,7 +659,7 @@ private fun ShelfChannel(ch: ChannelRef) {
     val c = MaterialTheme.colorScheme
     val open = LocalChannelOpener.current
     Column(
-        Modifier.width(76.dp).pressable { open("https://www.youtube.com/channel/${ch.id}") },
+        Modifier.width(76.dp).pressable { open("${TekuZone.BASE_URL}/user/${ch.id}") },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         ChannelAvatar(ch.avatar, ch.name, size = 64)

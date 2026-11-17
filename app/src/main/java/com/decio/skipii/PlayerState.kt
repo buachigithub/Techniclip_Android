@@ -391,21 +391,68 @@ class PlayerState(private val scope: CoroutineScope) {
         }
 
     fun setLike(target: LikeStatus) {
+        toggleRate("idea")
+    }
+
+    /** Toggles one of TechniClip Zone's 3 evaluation axes ("audio", "visual", "idea"). */
+    fun toggleRate(category: String) {
         val id = current?.id ?: return
-        val before = accountState ?: return
-        val next = if (before.like == target) LikeStatus.None else target
-        accountState = before.copy(like = next)
+        if (!Account.signedIn) {
+            actionMessage = "ログインすると評価できます"
+            return
+        }
+        val d = details ?: return
+        val curRated = d.ratedCategories
+        val curRatings = d.ratings
+        val nextActive = when (category) {
+            "audio" -> !curRated.audio
+            "visual" -> !curRated.visual
+            "idea" -> !curRated.idea
+            else -> return
+        }
+        val delta = if (nextActive) 1L else -1L
+        val nextRated = when (category) {
+            "audio" -> curRated.copy(audio = nextActive)
+            "visual" -> curRated.copy(visual = nextActive)
+            "idea" -> curRated.copy(idea = nextActive)
+            else -> curRated
+        }
+        val nextRatings = when (category) {
+            "audio" -> curRatings.copy(audio = (curRatings.audio + delta).coerceAtLeast(0L))
+            "visual" -> curRatings.copy(visual = (curRatings.visual + delta).coerceAtLeast(0L))
+            "idea" -> curRatings.copy(idea = (curRatings.idea + delta).coerceAtLeast(0L))
+            else -> curRatings
+        }
+        details = d.copy(ratings = nextRatings, ratedCategories = nextRated, likes = nextRatings.total)
+        accountState = accountState?.copy(ratings = nextRatings, rated = nextRated)
         scope.launch {
-            runCatching { InnerTube.setLike(id, next) }
-                .onFailure { accountState = before; actionMessage = str(R.string.player_like_failed) }
+            runCatching { InnerTube.rateVideo(id, category) }
+                .onSuccess { updated ->
+                    if (updated >= 0L && current?.id == id) {
+                        val currD = details ?: return@onSuccess
+                        val synced = when (category) {
+                            "audio" -> currD.ratings.copy(audio = updated)
+                            "visual" -> currD.ratings.copy(visual = updated)
+                            "idea" -> currD.ratings.copy(idea = updated)
+                            else -> currD.ratings
+                        }
+                        details = currD.copy(ratings = synced, likes = synced.total)
+                    }
+                }
+                .onFailure {
+                    if (current?.id == id) {
+                        details = d
+                        actionMessage = str(R.string.player_like_failed)
+                    }
+                }
         }
     }
 
     fun toggleSubscribe() {
-        val before = accountState ?: return
-        val channelId = before.channelId
-            ?: details?.item?.channelUrl?.substringAfter("/channel/", "")?.takeIf { it.startsWith("UC") }
+        val channelId = accountState?.channelId
+            ?: TekuZone.usernameFromUrl(details?.item?.channelUrl ?: current?.channelUrl)
             ?: return
+        val before = accountState ?: VideoAccountState(LikeStatus.None, subscribed = false, channelId = channelId)
         val subscribe = before.subscribed != true
         accountState = before.copy(subscribed = subscribe, channelId = channelId)
         scope.launch {
@@ -520,13 +567,11 @@ class PlayerState(private val scope: CoroutineScope) {
         val playWhenReady = player.playWhenReady
         replaceCurrent(player, item, position)
         player.playWhenReady = playWhenReady
-        val info = StreamCache.get(item.id) ?: return
-        details = details?.copy(quality = StreamSelection.pick(info).playedHeight?.let { "${it}p" })
     }
 
     private fun fail(t: Throwable) {
         error = YouTube.friendlyError(t)
-        botCheck = t is org.schabi.newpipe.extractor.exceptions.SignInConfirmNotBotException
+        botCheck = false
     }
 
     /** Fresh links too: the cached ones may be exactly what YouTube refused. */

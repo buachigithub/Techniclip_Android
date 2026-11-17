@@ -44,8 +44,8 @@
     <string name="settings_bell_line">Every new video</string>
     <string name="settings_system_notifications">Android notification settings</string>
     <string name="settings_system_notifications_line">Sound, vibration, Do Not Disturb</string>
-    <string name="settings_full_sync">Signed in with Google · full sync</string>
-    <string name="settings_sync_note">Full sync is on: likes, subscribes, Watch later and watch history go back to your account.</string>
+    <string name="settings_full_sync">てくぞねでログイン中 · 完全同期</string>
+    <string name="settings_sync_note">完全同期がオンです。評価、フォロー、再生リスト、再生履歴がアカウントに反映されます。</string>
     <!-- %1$s = this app's version, like 0.5.81. -->
     <string name="settings_version">Version %1$s</string>
     <string name="settings_up_to_date">Up to date · tap to check</string>

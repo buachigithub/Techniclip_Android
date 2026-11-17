@@ -162,12 +162,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        AppUpdate.checkIfDue()
     }
 
     override fun onResume() {
         super.onResume()
-        AppUpdate.onWindowResumed(this)
     }
 
     override fun onDestroy() {
@@ -333,7 +331,8 @@ fun SkipiiApp() {
         if (!orientation.multiWindow && activity.onSquareScreen()) activity.turnedSideways() else windowLandscape
     }
     // Audio only has no picture to go fullscreen with: the open player stays portrait.
-    orientation.Bind(playerOpen && !AudioOnly.enabled, landscape)
+    // Shorts can also rotate to landscape on demand or when the phone turns sideways.
+    orientation.Bind((playerOpen && !AudioOnly.enabled) || tab == Tab.Shorts, landscape)
     val pip = remember(activity) { PipController(activity) }
     // Closing the picture-in-picture window pauses (expanding it just comes back).
     pip.Bind(onClosed = { player.controller?.pause() })
@@ -347,13 +346,15 @@ fun SkipiiApp() {
     val showFullscreen = !tabletop && !tv && if (pip.active) fullscreenBeforePip.value else orientation.showsFullscreen(playerOpen, landscape)
     SideEffect { if (!pip.active) fullscreenBeforePip.value = showFullscreen }
     LaunchedEffect(showFullscreen) { player.fullscreen = showFullscreen }
-    SystemBarsHidden(showFullscreen || tabletop || (tv && playerOpen))
+    SystemBarsHidden(showFullscreen || tabletop || (tv && playerOpen) || (tab == Tab.Shorts && landscape))
     // A vertical video's fullscreen stays upright, and every video's on a near-square phone (Fullscreen.kt).
     fun toggleFullscreen() = if (showFullscreen) orientation.exitFullscreen() else orientation.enterFullscreen(vertical = player.videoAspect < 1f)
 
     fun showChannel(url: String) {
         // From the player: minimize it so the channel page is visible.
+        player.sheet = null
         player.expanded = false
+        shorts.commentsOpen = false
         if (channelState?.url != url) channelState = ChannelState(url, scope)
         playlistOverChannel = false
         openChannel = url
@@ -541,6 +542,15 @@ fun SkipiiApp() {
             LocalPictureInPicture provides pip,
             LocalVideoMenu provides { optionsFor = it },
             LocalChannelOpener provides { url -> showChannel(url) },
+            LocalTagSearch provides { q ->
+                player.sheet = null
+                player.expanded = false
+                openPlaylist = null
+                openChannel = null
+                tab = Tab.Search
+                search.query = q
+                search.submit()
+            },
             LocalWindowLayout provides windowLayout,
         ) {
         Box(Modifier.padding(start = pagesStart)) {
@@ -571,6 +581,8 @@ fun SkipiiApp() {
                 Tab.Shorts -> ShortsScreen(
                     shorts, { shortsMorph.value }, overlayBottom = stackBottom + GlassHeight + 16.dp,
                     shortFocus = shortFocus, barFocus = if (tv) shortsBarFocus else null,
+                    landscape = landscape,
+                    onToggleOrientation = if (tv) null else { { orientation.toggleLandscape(landscape) } },
                 )
                 Tab.Search -> SearchScreen(search, contentPadding, onOpen = player::open, scrollToTop = scrollToTop[Tab.Search] ?: 0)
                 Tab.Library -> LibraryScreen(

@@ -303,7 +303,7 @@ fun CommentsCard(state: CommentsState, onOpen: () -> Unit) {
         when {
             state.disabled -> Text(stringResource(R.string.comments_turned_off), color = c.onSurfaceVariant, fontSize = 13.5.sp)
             first != null -> Row {
-                ChannelAvatar(first.avatar, first.author, size = 30)
+                ChannelAvatar(first.avatar, first.displayName(), size = 30, usernameOrUrl = first.channelId)
                 Spacer(Modifier.width(10.dp))
                 Text(
                     text = first.text,
@@ -603,81 +603,42 @@ private fun Composer(state: CommentsState) {
 }
 
 @Composable
-private fun CommentRow(comment: Comment, state: CommentsState, isReply: Boolean = false) {
+private fun CommentRow(comment: Comment, @Suppress("UNUSED_PARAMETER") state: CommentsState, isReply: Boolean = false) {
     val c = MaterialTheme.colorScheme
-    Row(Modifier.fillMaxWidth().padding(start = if (isReply) 62.dp else 20.dp, end = 20.dp, top = 10.dp, bottom = 6.dp)) {
-        ChannelAvatar(comment.avatar, comment.author, size = if (isReply) 28 else 36)
+    val openChannel = LocalChannelOpener.current
+    val uname = comment.channelId?.removePrefix("@")?.takeIf { it.isNotBlank() && it != "ゲスト" }
+    val resolvedName = uname?.let { UserProfiles.names[it] } ?: comment.displayName()
+    Row(Modifier.fillMaxWidth().padding(start = if (isReply) 62.dp else 20.dp, end = 20.dp, top = 12.dp, bottom = 10.dp)) {
+        Box(
+            Modifier.pressable(enabled = uname != null) {
+                uname?.let { openChannel("${TekuZone.BASE_URL}/user/$it") }
+            },
+        ) {
+            ChannelAvatar(comment.avatar, resolvedName, size = if (isReply) 28 else 36, usernameOrUrl = uname)
+        }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (comment.pinned) Icon(Icons.Rounded.PushPin, stringResource(R.string.comments_pinned), tint = c.onSurfaceVariant, modifier = Modifier.size(14.dp))
-                Text(comment.displayName(), fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                Text(
+                    resolvedName,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .pressable(enabled = uname != null) {
+                            uname?.let { openChannel("${TekuZone.BASE_URL}/user/$it") }
+                        },
+                )
                 displayAge(comment.ago)?.let { Text(it, color = c.onSurfaceVariant, fontSize = 12.sp, maxLines = 1) }
-            }
-            Spacer(Modifier.height(3.dp))
-            Text(comment.text, fontSize = 14.sp, lineHeight = 20.sp)
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Like (signed in): pops like the video's like, and the count follows.
-                val isLiked = state.liked[comment.id] == true
-                val canLike = Account.signedIn && !comment.id.startsWith("local-")
-                val likeTint = if (isLiked) c.primary else c.onSurfaceVariant
-                Row(
-                    Modifier
-                        .pressable(enabled = canLike) { state.toggleLike(comment) { state.postError = it } }
-                        .padding(vertical = 4.dp, horizontal = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    FlourishIcon(
-                        if (isLiked) Icons.Rounded.ThumbUp else Icons.Outlined.ThumbUp,
-                        stringResource(if (isLiked) R.string.comments_unlike else R.string.comments_like),
-                        active = isLiked, kind = Flourish.Pop, tint = likeTint, size = 16.dp,
-                    )
-                    val count = comment.likes + if (isLiked) 1 else 0
-                    if (count > 0) {
-                        Spacer(Modifier.width(5.dp))
-                        Text(formatCount(count.toLong()), color = likeTint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
                 if (comment.hearted) {
-                    Spacer(Modifier.width(12.dp))
                     Icon(Icons.Rounded.Favorite, stringResource(R.string.comments_hearted), tint = c.primary, modifier = Modifier.size(14.dp))
                 }
-                if (Account.signedIn && !comment.id.startsWith("local-")) {
-                    Spacer(Modifier.width(16.dp))
-                    Text(
-                        stringResource(R.string.comments_reply),
-                        color = c.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.pressable { state.startReply(comment) }.padding(vertical = 2.dp),
-                    )
-                }
             }
-            if (!isReply && comment.replyCount > 0 && comment.repliesToken != null) {
-                val open = state.replies.containsKey(comment.id)
-                val busy = state.repliesLoading[comment.id] == true
-                Row(
-                    modifier = Modifier
-                        .padding(top = 6.dp)
-                        .pressable { if (open) state.hideReplies(comment) else state.loadReplies(comment) }
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        if (open) stringResource(R.string.comments_hide_replies)
-                        else plural(R.plurals.comments_replies, comment.replyCount.toLong(), comment.replyCount.toString()),
-                        color = c.primary,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 13.sp,
-                    )
-                    if (busy) {
-                        Spacer(Modifier.width(8.dp))
-                        CircularProgressIndicator(color = c.primary, strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
-                    }
-                }
-            }
+            Spacer(Modifier.height(4.dp))
+            Text(comment.text, fontSize = 14.sp, lineHeight = 20.sp)
         }
-    }
-    if (!isReply) {
-        state.replies[comment.id]?.forEach { reply -> CommentRow(reply, state, isReply = true) }
     }
 }

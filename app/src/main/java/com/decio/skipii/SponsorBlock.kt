@@ -63,21 +63,20 @@ object SponsorBlock {
     // ── Settings ─────────────────────────────────────────────────────────────────
 
     private var prefs: SharedPreferences? = null
-    var enabled by mutableStateOf(true)
+    var enabled by mutableStateOf(false)
         private set
     private val actions = mutableStateMapOf<Category, Action>()
 
     fun init(context: Context) {
-        val p = context.getSharedPreferences("sponsorblock", Context.MODE_PRIVATE).also { prefs = it }
-        enabled = p.getBoolean("enabled", true)
+        prefs = context.getSharedPreferences("sponsorblock", Context.MODE_PRIVATE)
+        enabled = false
         Category.entries.forEach { c ->
-            actions[c] = p.getString("action_${c.key}", null)?.let { runCatching { Action.valueOf(it) }.getOrNull() } ?: c.defaultAction
+            actions[c] = Action.Off
         }
     }
 
-    fun updateEnabled(value: Boolean) {
-        enabled = value
-        prefs?.edit()?.putBoolean("enabled", value)?.apply()
+    fun updateEnabled(@Suppress("UNUSED_PARAMETER") value: Boolean) {
+        enabled = false
     }
 
     fun actionFor(category: Category): Action = actions[category] ?: category.defaultAction
@@ -98,14 +97,7 @@ object SponsorBlock {
     fun cached(videoId: String): List<Segment>? = cache[videoId]
 
     /** Blocking; call off the main thread. Never throws — no segments is a valid answer. */
-    fun fetch(videoId: String): List<Segment> {
-        cache[videoId]?.let { return it }
-        val segments = runCatching { request(videoId) }
-            .onFailure { Log.w("Skipii", "SponsorBlock lookup failed for $videoId", it) }
-            .getOrNull() ?: return emptyList() // not cached: a later open retries
-        cache[videoId] = segments
-        return segments
-    }
+    fun fetch(@Suppress("UNUSED_PARAMETER") videoId: String): List<Segment> = emptyList()
 
     private fun request(videoId: String): List<Segment> {
         val prefix = MessageDigest.getInstance("SHA-256").digest(videoId.toByteArray())

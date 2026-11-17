@@ -2,48 +2,59 @@ package com.decio.skipii
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.os.SystemClock
-import android.util.Log
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.core.text.HtmlCompat
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import org.schabi.newpipe.extractor.Image
-import org.schabi.newpipe.extractor.MediaFormat
-import org.schabi.newpipe.extractor.channel.ChannelInfo
-import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
-import org.schabi.newpipe.extractor.channel.tabs.ChannelTabs
-import org.schabi.newpipe.extractor.linkhandler.ListLinkHandler
-import org.schabi.newpipe.extractor.ServiceList
-import org.schabi.newpipe.extractor.exceptions.AgeRestrictedContentException
-import org.schabi.newpipe.extractor.exceptions.ContentNotAvailableException
-import org.schabi.newpipe.extractor.exceptions.GeographicRestrictionException
-import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
-import org.schabi.newpipe.extractor.exceptions.SignInConfirmNotBotException
-import org.schabi.newpipe.extractor.search.SearchInfo
-import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory
-import org.schabi.newpipe.extractor.stream.AudioStream
-import org.schabi.newpipe.extractor.stream.AudioTrackType
-import org.schabi.newpipe.extractor.stream.DeliveryMethod
-import org.schabi.newpipe.extractor.stream.Description
-import org.schabi.newpipe.extractor.stream.StreamInfo
-import org.schabi.newpipe.extractor.stream.StreamInfoItem
-import org.schabi.newpipe.extractor.stream.StreamType
-import org.schabi.newpipe.extractor.stream.VideoStream
-import org.schabi.newpipe.extractor.localization.DateWrapper
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.IOException
+import java.net.URLEncoder
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
-import kotlin.math.abs
+
+@Immutable
+data class VideoRatings(
+    val audio: Long = 0,
+    val visual: Long = 0,
+    val idea: Long = 0,
+) {
+    val total: Long get() = audio + visual + idea
+}
+
+@Immutable
+data class RatedCategories(
+    val audio: Boolean = false,
+    val visual: Boolean = false,
+    val idea: Boolean = false,
+) {
+    val any: Boolean get() = audio || visual || idea
+}
+
+@Immutable
+data class CollaborationEvent(
+    val id: String,
+    val title: String,
+    val description: String,
+    val startDate: String,
+    val endDate: String,
+    val organizerTwitter: String,
+    val materialsInfo: String,
+)
 
 @Immutable
 data class VideoItem(
@@ -56,11 +67,9 @@ data class VideoItem(
     val durationSec: Long,
     val views: Long,
     val uploaded: String?,
-    /** The card's own "Not interested" / "Don't recommend channel" (signed-in feeds only, #16). */
     val feedback: CardFeedback? = null,
 )
 
-/** Tokens YouTube puts on a signed-in card for its feedback items; sent back as they are ([InnerTube.sendFeedback]). */
 @Immutable
 data class CardFeedback(val notInterested: String?, val dontRecommend: String?)
 
@@ -72,27 +81,25 @@ data class VideoDetails(
     val subscribers: Long,
     val related: List<VideoItem>,
     val playable: Boolean,
-    /** Height of the chosen stream, e.g. "1080p". */
     val quality: String?,
-    /** Every video height YouTube offers for this video, highest first. */
     val qualities: List<Int>,
-    /** Width / height of the chosen stream, known before the first frame; null if unknown. */
     val aspect: Float? = null,
-    /** The video's chapters in order (from its description timestamps / YouTube's markers); empty if none. */
     val chapters: List<Chapter> = emptyList(),
-    /** YouTube's storyboards (the scrub preview's frames), smallest frames first; empty if none. */
     val storyboards: List<Storyboard> = emptyList(),
-    /** Every caption track YouTube has for this video (Captions.kt). */
     val captions: List<CaptionTrack> = emptyList(),
+    val ratings: VideoRatings = VideoRatings(),
+    val ratedCategories: RatedCategories = RatedCategories(),
+    val streamUrl: String? = null,
+    val isHls: Boolean = false,
+    val sources: List<String> = emptyList(),
+    val characters: List<String> = emptyList(),
+    val tags: List<String> = emptyList(),
+    val respectTo: String? = null,
 )
 
 @Immutable
 data class Chapter(val startMs: Long, val title: String)
 
-/**
- * One storyboard level: sheets ([urls]) of [columns] × [rows] frames of [frameWidth] × [frameHeight]
- * px, [count] frames in all, one every [msPerFrame] (0 = spread evenly over the video).
- */
 @Immutable
 data class Storyboard(
     val urls: List<String>,
@@ -103,7 +110,6 @@ data class Storyboard(
     val count: Int,
     val msPerFrame: Int,
 ) {
-    /** The sheet and the spot in it of the frame shown at [ms] of a [durationMs] video. */
     fun frameAt(ms: Long, durationMs: Long): StoryboardFrame? {
         if (urls.isEmpty() || count <= 0 || columns <= 0 || rows <= 0) return null
         val step = if (msPerFrame > 0) msPerFrame.toLong() else (durationMs / count).coerceAtLeast(1L)
@@ -127,17 +133,14 @@ data class ChannelDetails(
     val banner: String?,
     val subscribers: Long,
     val description: String,
-    val videosTab: ListLinkHandler?,
+    val videosTab: Any? = null,
 )
 
 @Immutable
 data class Comment(
     val id: String,
-    /** The @handle (YouTube's comment data carries nothing else); also the reply @mention. */
     val author: String,
-    /** The author's channel, for their display name ([ChannelNames]). */
     val channelId: String?,
-    /** Display name when already known (the account's own comments). */
     val name: String? = null,
     val avatar: String?,
     val text: String,
@@ -146,9 +149,7 @@ data class Comment(
     val pinned: Boolean,
     val hearted: Boolean,
     val replyCount: Int,
-    /** Continuation for this thread's replies. */
     val repliesToken: String?,
-    /** Liked by the signed-in account (from YouTube's toolbar state). */
     val liked: Boolean = false,
 )
 
@@ -158,126 +159,232 @@ data class CommentsPage(
     val total: Int,
     val disabled: Boolean,
     val next: String?,
-    /** The video's chapters, read off the same first `next` page (see [CommentFeed.parseChapters]). */
     val chapters: List<Chapter> = emptyList(),
 )
 
-/** Everything the app asks of YouTube goes through here. All calls are blocking-safe (IO). */
-object YouTube {
-    private val service get() = ServiceList.YouTube
+/** Resolved stream and metadata entry for a TechniClip Zone video. */
+class TekuVideoRecord(
+    val id: String,
+    val name: String,
+    val uploaderName: String,
+    val uploaderUsername: String,
+    val duration: Long,
+    val streamUrl: String,
+    val isHls: Boolean,
+    val details: VideoDetails,
+    val comments: List<Comment>,
+    val subscribed: Boolean?,
+)
 
-    fun watchUrl(id: String) = "https://www.youtube.com/watch?v=$id"
+/** Lazily resolves and caches user avatars and display names from `/api/user/{username}` for feeds that only return usernames. */
+object UserProfiles {
+    val avatars = mutableStateMapOf<String, String>()
+    val names = mutableStateMapOf<String, String>()
+    private val asked = ConcurrentHashMap.newKeySet<String>()
+    private val pool = Executors.newFixedThreadPool(4)
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    fun note(username: String?, name: String?, avatar: String?) {
+        val u = username?.trim()?.removePrefix("@")?.takeIf { it.isNotEmpty() && it != "unknown" } ?: return
+        val n = name?.trim()?.takeIf { it.isNotEmpty() }
+        val a = avatar?.trim()?.takeIf { it.isNotEmpty() }
+        if (n == null && a == null) return
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            if (n != null && n != u) names[u] = n
+            if (a != null) { avatars[u] = a; asked.add(u) }
+        } else {
+            mainHandler.post {
+                if (n != null && n != u) names[u] = n
+                if (a != null) { avatars[u] = a; asked.add(u) }
+            }
+        }
+    }
+
+    fun resolve(usernameOrUrl: String?) {
+        val raw = usernameOrUrl?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val u = (if ("/" in raw) TekuZone.usernameFromUrl(raw) else raw.removePrefix("@"))
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && it != "unknown" && it != "ゲスト" }
+            ?: return
+        if (avatars.containsKey(u) || !asked.add(u)) return
+        pool.execute {
+            runCatching {
+                val encoded = URLEncoder.encode(u, "UTF-8")
+                val req = Request.Builder()
+                    .url("${TekuZone.BASE_URL}/api/user/$encoded")
+                    .get()
+                    .build()
+                Net.client.newCall(req).execute().use { res ->
+                    if (!res.isSuccessful) return@use
+                    val o = JSONObject(res.body?.string().orEmpty())
+                    val name = o.optString("name").ifBlank { u }
+                    val avatar = TekuZone.absUrl(o.optString("avatar_url").ifBlank { null })
+                    mainHandler.post {
+                        names[u] = name
+                        if (avatar != null) avatars[u] = avatar
+                    }
+                }
+            }.onFailure {
+                asked.remove(u)
+            }
+        }
+    }
+}
+
+/** Lazily loads and caches character transparent images from `/charapedia` for material/character chips. */
+object CharacterImages {
+    val images = mutableStateMapOf<String, String>()
+    @Volatile
+    private var loaded = false
+    private val pool = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    fun ensureLoaded() {
+        if (loaded) return
+        loaded = true
+        pool.execute {
+            runCatching {
+                val req = Request.Builder()
+                    .url("${TekuZone.BASE_URL}/charapedia")
+                    .get()
+                    .build()
+                Net.client.newCall(req).execute().use { res ->
+                    if (!res.isSuccessful) {
+                        loaded = false
+                        return@use
+                    }
+                    val html = res.body?.string().orEmpty()
+                    val found = HashMap<String, String>()
+                    val cardRe = Regex(
+                        """<a[^>]*class="[^"]*chara-card[^"]*"[^>]*data-name="([^"]*)"[^>]*data-aliases="([^"]*)"[\s\S]*?<div class="chara-list-thumb">[\s\S]*?<img\s+src="([^"]+)"""",
+                        RegexOption.IGNORE_CASE,
+                    )
+                    cardRe.findAll(html).forEach { m ->
+                        val name = m.groupValues[1].trim().lowercase()
+                        val aliases = m.groupValues[2].split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+                        val imgUrl = TekuZone.absUrl(m.groupValues[3].trim()) ?: return@forEach
+                        if (name.isNotEmpty()) found[name] = imgUrl
+                        aliases.forEach { alias -> found[alias] = imgUrl }
+                    }
+                    if (found.isNotEmpty()) {
+                        mainHandler.post { images.putAll(found) }
+                    }
+                }
+            }.onFailure {
+                loaded = false
+            }
+        }
+    }
+
+    fun urlFor(characterName: String): String? = images[characterName.trim().lowercase()]
+}
+
+/** Everything the app asks of TechniClip Zone (てくぞね) goes through here. */
+object YouTube {
+
+    fun watchUrl(id: String) = "${TekuZone.BASE_URL}/video/$id"
 
     suspend fun search(query: String): List<VideoItem> = withContext(Dispatchers.IO) {
-        val handler = service.searchQHFactory.fromQuery(query, listOf(YoutubeSearchQueryHandlerFactory.VIDEOS), "")
-        SearchInfo.getInfo(service, handler).relatedItems
-            .filterIsInstance<StreamInfoItem>()
-            .mapNotNull { it.toVideoItem() }
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val req = Request.Builder()
+            .url("${TekuZone.BASE_URL}/api/search?q=$encoded&limit=100")
+            .get()
+            .build()
+        Net.client.newCall(req).execute().use { res ->
+            if (!res.isSuccessful) throw IOException("HTTP ${res.code}")
+            val root = JSONObject(res.body?.string().orEmpty())
+            val arr = root.optJSONArray("results") ?: JSONArray()
+            (0 until arr.length()).mapNotNull { i ->
+                arr.optJSONObject(i)?.let { parseVideoItem(it) }
+            }
+        }
     }
 
-    /**
-     * [wait] false: no quiet retries through a bot check ([BotCheck.withoutWaiting]) — Shorts
-     * would rather move on than hold a short on a spinner for up to half a minute.
-     */
-    /**
-     * Music (#35: it plays at 1× even with a speed remembered): YouTube's own category, or a channel
-     * YouTube makes for an artist's tracks ("Artist - Topic"). Categories come in English (hl=en).
-     */
-    fun isMusic(info: StreamInfo): Boolean =
-        runCatching { info.category }.getOrNull().equals("Music", ignoreCase = true) ||
-            info.uploaderName.orEmpty().endsWith(" - Topic")
+    fun isMusic(@Suppress("UNUSED_PARAMETER") info: Any?): Boolean = false
 
-    suspend fun details(id: String, wait: Boolean = true): VideoDetails = withContext(Dispatchers.IO) {
-        val info = if (wait) BotCheck.retrying(id) { StreamCache.getOrLoad(id) } else BotCheck.withoutWaiting(id) { StreamCache.getOrLoad(id) }
-        val picked = StreamSelection.pick(info)
-        VideoDetails(
-            item = VideoItem(
-                id = id,
-                title = info.name,
-                channel = info.uploaderName.orEmpty(),
-                channelUrl = info.uploaderUrl,
-                thumbnail = info.thumbnails.bestUrl(),
-                avatar = info.uploaderAvatars.bestUrl(targetWidth = 96),
-                durationSec = info.duration,
-                views = info.viewCount,
-                uploaded = uploadedText(info.textualUploadDate, info.uploadDate),
-            ),
-            description = info.description?.let { d ->
-                if (d.type == Description.HTML) HtmlCompat.fromHtml(d.content, HtmlCompat.FROM_HTML_MODE_COMPACT).toString().trim()
-                else d.content.trim()
-            }.orEmpty(),
-            likes = info.likeCount,
-            subscribers = info.uploaderSubscriberCount,
-            related = info.relatedItems.filterIsInstance<StreamInfoItem>().mapNotNull { it.toVideoItem() },
-            playable = picked.isPlayable,
-            quality = picked.playedHeight?.let { "${it}p" },
-            qualities = StreamSelection.heights(info),
-            aspect = (if (picked.usesSeparate) picked.video else picked.muxed)
-                ?.takeIf { it.width > 0 && it.height > 0 }?.let { it.width.toFloat() / it.height },
-            chapters = info.streamSegments.orEmpty()
-                .map { Chapter(it.startTimeSeconds * 1000L, it.title.orEmpty().trim()) }
-                .sortedBy { it.startMs },
-            storyboards = info.previewFrames.orEmpty()
-                .filter { it.urls.isNotEmpty() && it.frameWidth > 0 && it.frameHeight > 0 }
-                .map { Storyboard(it.urls, it.frameWidth, it.frameHeight, it.framesPerPageX, it.framesPerPageY, it.totalCount, it.durationPerFrame) }
-                .sortedBy { it.frameWidth },
-            // NewPipe keeps each track once, as TTML; the same link with fmt=srv3 has the word timings.
-            captions = info.subtitles.orEmpty()
-                .filter { !it.content.isNullOrBlank() }
-                .map { CaptionTrack(it.languageTag, it.isAutoGenerated, it.content.replace(Regex("([?&])fmt=[^&]*"), "$1fmt=srv3")) }
-                .distinctBy { it.language to it.auto },
-        )
-    }
-
-    // ── Channels ──
+    suspend fun details(id: String, @Suppress("UNUSED_PARAMETER") wait: Boolean = true): VideoDetails =
+        withContext(Dispatchers.IO) {
+            StreamCache.getOrLoad(id).details
+        }
 
     suspend fun channel(url: String): ChannelDetails = withContext(Dispatchers.IO) {
-        val info = ChannelInfo.getInfo(service, url)
-        val videosTab = info.tabs.firstOrNull { it.contentFilters.contains(ChannelTabs.VIDEOS) }
-        ChannelDetails(
-            url = url,
-            id = info.id,
-            name = info.name,
-            avatar = info.avatars.bestUrl(targetWidth = 176),
-            banner = info.banners.bestUrl(targetWidth = 1080),
-            subscribers = info.subscriberCount,
-            description = info.description.orEmpty(),
-            videosTab = videosTab,
-        )
+        val username = TekuZone.usernameFromUrl(url) ?: throw IOException("Invalid user URL")
+        val encoded = URLEncoder.encode(username, "UTF-8")
+        val req = Request.Builder()
+            .url("${TekuZone.BASE_URL}/api/user/$encoded")
+            .get()
+            .build()
+        Net.client.newCall(req).execute().use { res ->
+            if (!res.isSuccessful) throw IOException("HTTP ${res.code}")
+            val o = JSONObject(res.body?.string().orEmpty())
+            val uname = o.optString("username").ifBlank { username }
+            val displayName = o.optString("name").ifBlank { uname }
+            val avatar = TekuZone.absUrl(o.optString("avatar_url").ifBlank { null })
+            UserProfiles.note(uname, displayName, avatar)
+            val followers = o.optLong("followers_count", 0L)
+            val videosCount = o.optInt("videos_count", 0)
+            ChannelDetails(
+                url = "${TekuZone.BASE_URL}/user/$uname",
+                id = uname,
+                name = displayName,
+                avatar = avatar,
+                banner = null,
+                subscribers = followers,
+                description = "@$uname ・ ${videosCount}本の動画",
+                videosTab = null,
+            )
+        }
     }
 
-    private fun StreamInfoItem.toVideoItem(): VideoItem? {
-        // Live and upcoming entries need HLS handling that isn't built yet.
-        if (streamType != StreamType.VIDEO_STREAM) return null
-        val id = runCatching { service.streamLHFactory.getId(url) }.getOrNull() ?: return null
+    internal fun parseVideoItem(o: JSONObject): VideoItem? {
+        val id = o.optString("id").ifBlank { o.optString("video_id") }.ifBlank { return null }
+        val title = o.optString("title").ifBlank { "無題の動画" }
+        val primaryAuthorObj = o.optJSONObject("primary_author")
+            ?: o.optJSONArray("authors")?.optJSONObject(0)
+        val rawAuthor = when (val a = o.opt("author")) {
+            is JSONArray -> a.optString(0)
+            is String -> a
+            else -> ""
+        }
+        val username = primaryAuthorObj?.optString("username")?.ifBlank { null }
+            ?: rawAuthor.ifBlank { "unknown" }
+        val displayName = primaryAuthorObj?.optString("name")?.ifBlank { null }
+            ?: o.optString("author_name").ifBlank { null }
+            ?: UserProfiles.names[username]
+            ?: username
+        val avatar = TekuZone.absUrl(
+            primaryAuthorObj?.optString("avatar_url")?.ifBlank { null }
+                ?: o.optString("avatar_url").ifBlank { null }
+        ) ?: UserProfiles.avatars[username]
+        if (avatar != null) UserProfiles.note(username, displayName, avatar) else UserProfiles.resolve(username)
+        val thumbPath = o.optString("thumbnail_path").ifBlank { "/thumbnails/$id.jpg" }
+        val views = o.optLong("views", 0L)
+        val uploadRaw = o.optString("upload_time").ifBlank { o.optString("upload_time_iso") }.ifBlank { o.optString("watched_at") }
+        val uploaded = parseUploadedRelative(uploadRaw) ?: o.optString("upload_time_formatted").ifBlank { null }
         return VideoItem(
             id = id,
-            title = name,
-            channel = uploaderName.orEmpty(),
-            channelUrl = uploaderUrl,
-            thumbnail = thumbnails.bestUrl(),
-            avatar = uploaderAvatars.bestUrl(targetWidth = 96),
-            durationSec = duration,
-            views = viewCount,
-            uploaded = uploadedText(textualUploadDate, uploadDate),
+            title = title,
+            channel = displayName,
+            channelUrl = "${TekuZone.BASE_URL}/user/$username",
+            thumbnail = TekuZone.absUrl(thumbPath),
+            avatar = avatar,
+            durationSec = o.optLong("duration", 0L),
+            views = views,
+            uploaded = uploaded,
         )
     }
 
-    /** The image closest to [targetWidth]: sharp enough for a full-width card, no 4K downloads. */
-    private fun List<Image>.bestUrl(targetWidth: Int = 720): String? =
-        filter { it.width > 0 }.minByOrNull { abs(it.width - targetWidth) }?.url ?: firstOrNull()?.url
-
-    /**
-     * For brand-new uploads the extractor's "textual" date is a raw ISO timestamp
-     * ("2026-10-04T04:00:22-07:00"); show it relative, like everywhere else.
-     */
-    private fun uploadedText(textual: String?, date: DateWrapper?): String? {
-        if (textual != null && !ISO_DATE.containsMatchIn(textual)) return textual
-        val then = date?.offsetDateTime()?.toInstant() ?: return textual?.substringBefore('T')
-        return relativeTime(then)
+    internal fun parseUploadedRelative(raw: String?): String? {
+        val s = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val instant = runCatching {
+            when {
+                s.endsWith("Z") || '+' in s.drop(10) -> OffsetDateTime.parse(s).toInstant()
+                'T' in s -> LocalDateTime.parse(s).toInstant(ZoneOffset.UTC)
+                else -> null
+            }
+        }.getOrNull() ?: return s.substringBefore('T').ifBlank { null }
+        return relativeTime(instant)
     }
-
-    private val ISO_DATE = Regex("^\\d{4}-\\d{2}-\\d{2}T")
 
     fun relativeTime(then: Instant, now: Instant = Instant.now()): String {
         val s = Duration.between(then, now).seconds.coerceAtLeast(0)
@@ -293,76 +400,37 @@ object YouTube {
         }
     }
 
-    /** Turns extractor failures into a sentence a person can act on. */
     fun friendlyError(t: Throwable): String = when (t) {
-        is AgeRestrictedContentException -> str(R.string.player_error_age_restricted)
-        is GeographicRestrictionException -> str(R.string.player_error_geo)
-        is SignInConfirmNotBotException ->
-            str(R.string.player_error_bot_check) + "\n" + str(R.string.player_error_bot_check_hint)
-        is org.schabi.newpipe.extractor.exceptions.PrivateContentException -> str(R.string.player_error_private)
-        // Members-only videos (e.g. "Insider Edition") need a channel membership; Skipii's
-        // stream extraction is anonymous, so it can't play them even when you're a member.
-        is ContentNotAvailableException ->
-            if (t.message.orEmpty().contains("member", ignoreCase = true) || t is org.schabi.newpipe.extractor.exceptions.PaidContentException)
-                str(R.string.player_error_members_only)
-            else str(R.string.player_error_unavailable)
-        is ReCaptchaException -> str(R.string.player_error_rate_limited)
         is IOException -> str(R.string.player_error_offline)
         else -> str(R.string.player_error_generic)
     }
 }
 
-/**
- * Stream info is fetched once per video and shared by the UI (details) and the playback
- * service (media URLs). Both live in one process, so a map is enough. Stream URLs expire
- * after roughly six hours; entries older than [MAX_AGE_MS] are refetched.
- */
 object StreamCache {
-    private const val MAX_AGE_MS = 4 * 60 * 60 * 1000L
-    /** A load whose stream request was refused ([keepRefused]): the next open after this tries again. */
-    private const val REFUSED_MAX_AGE_MS = 10 * 60 * 1000L
-    private class Entry(val info: StreamInfo, val loadedAt: Long, val refused: Boolean = false) {
-        val fresh get() = System.currentTimeMillis() - loadedAt < if (refused) REFUSED_MAX_AGE_MS else MAX_AGE_MS
+    private const val MAX_AGE_MS = 30 * 60 * 1000L
+
+    private class Entry(val record: TekuVideoRecord, val loadedAt: Long) {
+        val fresh get() = System.currentTimeMillis() - loadedAt < MAX_AGE_MS
     }
+
     private val entries = ConcurrentHashMap<String, Entry>()
+    private val inflight = ConcurrentHashMap<String, FutureTask<TekuVideoRecord>>()
 
-    /**
-     * Stream URLs are signed for the network they were fetched on and expire; a stale one
-     * gets HTTP 403. Dropping it forces a fresh extraction on the next load.
-     */
     fun invalidate(id: String) { entries.remove(id) }
-
-    /** The phone switched networks: every cached URL is now bound to the old address. */
     fun invalidateAll() = entries.clear()
 
-    fun get(id: String): StreamInfo? = entries[id]?.takeIf { it.fresh }?.info
+    fun get(id: String): TekuVideoRecord? = entries[id]?.takeIf { it.fresh }?.record
 
-    /**
-     * Keeps [StreamsRefused.info] for the media source to play after all ([BotCheck] gave up),
-     * not for long. [getOrLoad] never returns it: every load tries for the real streams again.
-     */
-    fun keepRefused(id: String, info: StreamInfo) {
-        entries[id] = Entry(info, System.currentTimeMillis(), refused = true)
+    fun put(record: TekuVideoRecord) {
+        entries[record.id] = Entry(record, System.currentTimeMillis())
     }
 
-    /**
-     * One extraction per video at a time: a prefetch (touch-down, top of Home) and the real
-     * open share the same in-flight load instead of racing two full extractions.
-     */
-    private val inflight = ConcurrentHashMap<String, FutureTask<StreamInfo>>()
-
-    fun getOrLoad(id: String): StreamInfo {
-        entries[id]?.takeIf { it.fresh && !it.refused }?.let { return it.info }
+    fun getOrLoad(id: String): TekuVideoRecord {
+        entries[id]?.takeIf { it.fresh }?.let { return it.record }
         val mine = FutureTask {
-            val startedAt = SystemClock.elapsedRealtime()
-            StreamInfo.getInfo(ServiceList.YouTube, YouTube.watchUrl(id)).also {
-                val picked = StreamSelection.pick(it)
-                // Details came, but the stream request was refused: a bot check, not a dead
-                // video (or one with only ANDROID's 360p combined stream), so nothing is
-                // cached and the load can be retried.
-                if (!picked.usesSeparate && BotCheck.refusedSince(id, startedAt)) throw StreamsRefused(id, it)
-                entries[id] = Entry(it, System.currentTimeMillis())
-                Net.noteMediaHost((picked.video ?: picked.muxed)?.content)
+            fetchRecord(id).also { record ->
+                entries[id] = Entry(record, System.currentTimeMillis())
+                Net.noteMediaHost(record.streamUrl)
             }
         }
         val running = inflight.putIfAbsent(id, mine)
@@ -376,7 +444,167 @@ object StreamCache {
         }
     }
 
-    /** Background warm-up; one at a time so prefetches never crowd a real open. */
+    private fun fetchRecord(id: String): TekuVideoRecord {
+        val encoded = URLEncoder.encode(id, "UTF-8")
+        val req = Request.Builder()
+            .url("${TekuZone.BASE_URL}/api/video/$encoded")
+            .get()
+            .build()
+        Net.client.newCall(req).execute().use { res ->
+            if (!res.isSuccessful) throw IOException("HTTP ${res.code} for video $id")
+            val o = JSONObject(res.body?.string().orEmpty())
+            return parseRecordFromVideoApi(id, o)
+        }
+    }
+
+    internal fun parseRecordFromVideoApi(fallbackId: String, o: JSONObject): TekuVideoRecord {
+        val id = o.optString("id").ifBlank { o.optString("video_id") }.ifBlank { fallbackId }
+        val title = o.optString("title").ifBlank { "無題の動画" }
+        val authorObj = o.optJSONArray("authors")?.optJSONObject(0) ?: o.optJSONObject("primary_author")
+        val rawAuthor = when (val a = o.opt("author")) {
+            is JSONArray -> a.optString(0)
+            is String -> a
+            else -> ""
+        }
+        val username = authorObj?.optString("username")?.ifBlank { null } ?: rawAuthor.ifBlank { "unknown" }
+        val displayName = authorObj?.optString("name")?.ifBlank { null } ?: username
+        val avatar = TekuZone.absUrl(authorObj?.optString("avatar_url")?.ifBlank { null })
+        UserProfiles.note(username, displayName, avatar)
+        val isFollowing = if (authorObj?.has("is_following") == true) authorObj.optBoolean("is_following") else null
+
+        val isHls = o.optBoolean("is_hls", false) && o.optString("hls_path").isNotBlank()
+        val hlsPath = o.optString("hls_path")
+        val filePath = o.optString("file_path").ifBlank { "/uploads/$id.mp4" }
+        val streamUrl = TekuZone.absUrl(if (isHls) hlsPath else filePath) ?: "${TekuZone.BASE_URL}/uploads/$id.mp4"
+        val thumbUrl = TekuZone.absUrl(o.optString("thumbnail_path").ifBlank { "/thumbnails/$id.jpg" })
+
+        val ratingsObj = o.optJSONObject("ratings")
+        val ratings = VideoRatings(
+            audio = ratingsObj?.optLong("audio", 0L) ?: 0L,
+            visual = ratingsObj?.optLong("visual", 0L) ?: 0L,
+            idea = ratingsObj?.optLong("idea", 0L) ?: 0L,
+        )
+        val ratedObj = o.optJSONObject("rated_categories") ?: o.optJSONObject("user_rated")
+        val rated = RatedCategories(
+            audio = ratedObj?.optBoolean("audio", false) ?: false,
+            visual = ratedObj?.optBoolean("visual", false) ?: false,
+            idea = ratedObj?.optBoolean("idea", false) ?: false,
+        )
+
+        val baseDesc = o.optString("description").trim()
+        val respect = o.optString("respect_to").trim()
+        val sources = o.optJSONArray("sources")?.let { arr -> (0 until arr.length()).mapNotNull { arr.optString(it).ifBlank { null } } }.orEmpty()
+        val characters = o.optJSONArray("characters")?.let { arr -> (0 until arr.length()).mapNotNull { arr.optString(it).ifBlank { null } } }.orEmpty()
+        val tags = o.optJSONArray("tags")?.let { arr -> (0 until arr.length()).mapNotNull { arr.optString(it).ifBlank { null } } }.orEmpty()
+        val fullDescription = buildString {
+            if (baseDesc.isNotEmpty()) append(baseDesc)
+            if (respect.isNotEmpty()) {
+                if (isNotEmpty()) append("\n\n")
+                append("リスペクト: ").append(respect)
+            }
+            if (sources.isNotEmpty()) {
+                if (isNotEmpty()) append("\n")
+                append("原曲・ソース: ").append(sources.joinToString(", "))
+            }
+            if (characters.isNotEmpty()) {
+                if (isNotEmpty()) append("\n")
+                append("素材: ").append(characters.joinToString(", "))
+            }
+            if (tags.isNotEmpty()) {
+                if (isNotEmpty()) append("\n")
+                append("タグ: ").append(tags.joinToString(" ") { "#$it" })
+            }
+        }
+
+        val relatedArr = o.optJSONArray("recommended") ?: JSONArray()
+        val related = (0 until relatedArr.length()).mapNotNull { i ->
+            relatedArr.optJSONObject(i)?.let { YouTube.parseVideoItem(it) }
+        }
+
+        val commentsArr = o.optJSONArray("comments") ?: JSONArray()
+        val comments = (0 until commentsArr.length()).mapNotNull { i ->
+            val c = commentsArr.optJSONObject(i) ?: return@mapNotNull null
+            val uInfo = c.optJSONObject("user_info")
+            val cUser = uInfo?.optString("username")?.ifBlank { null }
+                ?: c.optString("user").ifBlank { c.optString("author") }.ifBlank { "ゲスト" }
+            val cName = uInfo?.optString("name")?.ifBlank { null }
+                ?: c.optString("display_name").ifBlank { null }
+                ?: UserProfiles.names[cUser]
+                ?: cUser
+            val cAvatar = TekuZone.absUrl(
+                uInfo?.optString("avatar_url")?.ifBlank { null }
+                    ?: c.optString("avatar_url").ifBlank { null }
+            ) ?: UserProfiles.avatars[cUser]
+            if (cAvatar != null) UserProfiles.note(cUser, cName, cAvatar) else UserProfiles.resolve(cUser)
+            val cText = c.optString("text").ifBlank { c.optString("comment") }.trim()
+            if (cText.isEmpty()) return@mapNotNull null
+            val cTs = c.optString("timestamp").ifBlank { c.optString("timestamp_iso") }
+            Comment(
+                id = c.optString("id").ifBlank { "comment-$id-$i" },
+                author = "@$cUser",
+                channelId = cUser,
+                name = cName,
+                avatar = cAvatar,
+                text = cText,
+                likes = c.optInt("advert_points", 0),
+                ago = YouTube.parseUploadedRelative(cTs) ?: c.optString("formatted_timestamp").ifBlank { null },
+                pinned = c.optBoolean("is_advert_comment", false),
+                hearted = c.optBoolean("is_support_comment", false),
+                replyCount = 0,
+                repliesToken = null,
+                liked = false,
+            )
+        }
+
+        val item = VideoItem(
+            id = id,
+            title = title,
+            channel = displayName,
+            channelUrl = "${TekuZone.BASE_URL}/user/$username",
+            thumbnail = thumbUrl,
+            avatar = avatar,
+            durationSec = o.optLong("duration", 0L),
+            views = o.optLong("views", 0L),
+            uploaded = YouTube.parseUploadedRelative(o.optString("upload_time")) ?: o.optString("upload_time_formatted").ifBlank { null },
+        )
+
+        val details = VideoDetails(
+            item = item,
+            description = fullDescription,
+            likes = ratings.total,
+            subscribers = -1L,
+            related = related,
+            playable = streamUrl.isNotBlank(),
+            quality = if (isHls) "HLS Auto" else "Original",
+            qualities = emptyList(),
+            aspect = null,
+            chapters = emptyList(),
+            storyboards = emptyList(),
+            captions = emptyList(),
+            ratings = ratings,
+            ratedCategories = rated,
+            streamUrl = streamUrl,
+            isHls = isHls,
+            sources = sources,
+            characters = characters,
+            tags = tags,
+            respectTo = respect.ifBlank { null },
+        )
+
+        return TekuVideoRecord(
+            id = id,
+            name = title,
+            uploaderName = displayName,
+            uploaderUsername = username,
+            duration = item.durationSec,
+            streamUrl = streamUrl,
+            isHls = isHls,
+            details = details,
+            comments = comments,
+            subscribed = isFollowing,
+        )
+    }
+
     private val prefetcher = Executors.newSingleThreadExecutor()
 
     fun prefetch(id: String) {
@@ -385,81 +613,18 @@ object StreamCache {
     }
 }
 
-/**
- * The extractor's VISIONOS request (every stream link) was refused, but ANDROID's details
- * came; [info] may still hold ANDROID's 360p combined stream, which played silently in place
- * of the real streams before (2026-10-27).
- */
-class StreamsRefused(id: String, val info: StreamInfo) : SignInConfirmNotBotException("VISIONOS was refused for $id")
-
-/**
- * "Sign in to confirm you're not a bot" (see [PlayerFallback]) comes and goes: on 2026-10-27
- * the same client refused and then served the same videos minutes apart. A load it refuses
- * is retried quietly a few times, the player keeping its spinner with a note ([waiting]),
- * before giving up: then a 360p combined stream, if the refused load had one, plays rather
- * than nothing; else the error stands. Prefetches don't retry; only loads someone waits for.
- */
 object BotCheck {
-    private val RetryDelaysMs = longArrayOf(3_000, 8_000, 20_000)
-
-    /** The video whose load is waiting out a bot check, for the player's note. */
     var waiting by mutableStateOf<String?>(null)
         private set
 
-    private val refusedAt = ConcurrentHashMap<String, Long>()
+    fun noteRefused(@Suppress("UNUSED_PARAMETER") id: String) {}
+    fun refusedSince(@Suppress("UNUSED_PARAMETER") id: String, @Suppress("UNUSED_PARAMETER") since: Long) = false
 
-    /** A stream request for [id] was refused ([PlayerFallback] sees every one). */
-    fun noteRefused(id: String) { refusedAt[id] = SystemClock.elapsedRealtime() }
-
-    fun refusedSince(id: String, since: Long) = (refusedAt[id] ?: Long.MIN_VALUE) >= since
-
-    /** [load] for [id], retried while YouTube answers with the bot check. */
-    suspend fun retrying(id: String, load: () -> StreamInfo): StreamInfo {
-        try {
-            for ((attempt, wait) in RetryDelaysMs.withIndex()) {
-                try {
-                    return load()
-                } catch (e: SignInConfirmNotBotException) {
-                    Log.w("Skipii", "bot check for $id; trying again in ${wait / 1000}s (${attempt + 1}/${RetryDelaysMs.size})")
-                    waiting = id
-                    delay(wait)
-                }
-            }
-            return load().also { Log.i("Skipii", "bot check for $id passed on the last try") }
-        } catch (e: SignInConfirmNotBotException) {
-            return giveUp(id, e)
-        } finally {
-            if (waiting == id) waiting = null
-        }
-    }
-
-    /** [retrying] for a thread that can block (the playback service's resolver). */
-    fun retryingBlocking(id: String, load: () -> StreamInfo): StreamInfo = runBlocking { retrying(id, load) }
-
-    /**
-     * [load] with no waiting, for items nobody is watching yet (a restored session, the
-     * queue): a restored item that resolved after its retries became the current video,
-     * replacing the one just opened meanwhile.
-     */
-    fun withoutWaiting(id: String, load: () -> StreamInfo): StreamInfo =
-        try { load() } catch (e: SignInConfirmNotBotException) { giveUp(id, e) }
-
-    private fun giveUp(id: String, e: SignInConfirmNotBotException): StreamInfo {
-        val partial = (e as? StreamsRefused)?.info
-        if (partial != null && StreamSelection.pick(partial).isPlayable) {
-            Log.w("Skipii", "bot check for $id; giving up on the real streams, playing the 360p combined one")
-            StreamCache.keepRefused(id, partial)
-            return partial
-        }
-        Log.w("Skipii", "bot check for $id; giving up")
-        throw e
-    }
+    suspend fun <T> retrying(@Suppress("UNUSED_PARAMETER") id: String, load: () -> T): T = load()
+    fun <T> retryingBlocking(@Suppress("UNUSED_PARAMETER") id: String, load: () -> T): T = runBlocking { load() }
+    fun <T> withoutWaiting(@Suppress("UNUSED_PARAMETER") id: String, load: () -> T): T = load()
 }
 
-/**
- * The user's chosen video height, or null for Auto. Read by the playback service when it
- * builds a media source, so it lives outside Compose; persisted across launches.
- */
 object QualityPreference {
     private const val KEY = "quality_height"
     private var prefs: SharedPreferences? = null
@@ -479,70 +644,12 @@ object QualityPreference {
     }
 }
 
-/** Chooses which of YouTube's many streams to play. */
 object StreamSelection {
-    /** Above this height, phones gain little and pay a lot in data. */
-    private const val MAX_HEIGHT = 1080
-
-    data class Picked(val video: VideoStream?, val audio: AudioStream?, val muxed: VideoStream?) {
-        val isPlayable get() = (video != null && audio != null) || muxed != null
-        /** What will actually play: the separate streams, or the combined fallback. */
-        val usesSeparate get() = video != null && audio != null
-        val playedHeight: Int? get() = (if (usesSeparate) video?.height else muxed?.height)?.takeIf { it > 0 }
+    data class Picked(val playedHeight: Int? = null) {
+        val isPlayable get() = true
+        val usesSeparate get() = false
     }
 
-    fun pick(info: StreamInfo): Picked {
-        // H.264 first: every device decodes it in hardware. VP9 next, anything else last.
-        fun formatRank(format: MediaFormat?) = when (format) {
-            MediaFormat.MPEG_4 -> 0
-            MediaFormat.WEBM -> 1
-            else -> 2
-        }
-        val candidates = info.videoOnlyStreams
-            .filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && it.height > 0 }
-        val chosen = QualityPreference.height
-        // A chosen height plays exactly if offered, else the nearest below it. Auto caps at 1080p.
-        val ceiling = chosen ?: MAX_HEIGHT
-        val video = (candidates.filter { it.height <= ceiling }.ifEmpty { candidates })
-            .sortedWith(
-                compareBy<VideoStream> { if (it.height <= ceiling) ceiling - it.height else it.height }
-                    .thenBy { formatRank(it.format) },
-            )
-            .firstOrNull()
-        // The original language is preferred, but ANY audio track beats none: with no
-        // accepted audio the player fell back to the 360p combined stream while the label
-        // still said 1080p (the blurry-video bug, 2026-10-04).
-        val audio = info.audioStreams
-            .filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP }
-            .sortedWith(
-                compareBy<AudioStream> { if (it.audioTrackType == null || it.audioTrackType == AudioTrackType.ORIGINAL) 0 else 1 }
-                    .thenBy { if (it.format == MediaFormat.M4A) 0 else 1 }
-                    .thenByDescending { it.averageBitrate },
-            )
-            .firstOrNull()
-        val muxed = info.videoStreams
-            .filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP }
-            .maxByOrNull { it.height }
-        return Picked(video, audio, muxed)
-    }
-
-    /**
-     * The Auto ladder: one codec family (H.264 if offered, else VP9 — the player won't
-     * switch between codecs), one stream per height (highest frame rate wins), up to 1080p.
-     * Played as a single adaptive DASH set, so playback starts at whatever the connection
-     * can sustain immediately and climbs, like YouTube.
-     */
-    fun autoLadder(info: StreamInfo): List<VideoStream> {
-        val usable = info.videoOnlyStreams.filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && it.height in 1..MAX_HEIGHT && it.itagItem != null }
-        val family = usable.filter { it.codec?.startsWith("avc") == true }.ifEmpty { usable.filter { it.format == MediaFormat.WEBM } }
-        return family.groupBy { it.height }
-            .map { (_, sameHeight) -> sameHeight.maxBy { it.fps * 100_000L + it.bitrate } }
-            .sortedBy { it.height }
-    }
-
-    fun heights(info: StreamInfo): List<Int> = info.videoOnlyStreams
-        .filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && it.height > 0 }
-        .map { it.height }
-        .distinct()
-        .sortedDescending()
+    fun pick(@Suppress("UNUSED_PARAMETER") info: Any?): Picked = Picked(null)
+    fun heights(@Suppress("UNUSED_PARAMETER") info: Any?): List<Int> = emptyList()
 }

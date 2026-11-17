@@ -7,12 +7,12 @@
     <string name="ui_back">Back</string>
     <!-- Button that closes a page or message. -->
     <string name="ui_close">Close</string>
-    <!-- Button, ~20 characters: opens Google's sign-in page. -->
-    <string name="ui_sign_in_with_google">Sign in with Google</string>
-    <!-- Name of the account's built-in playlist of videos saved for later (YouTube's "Watch later"). -->
-    <string name="ui_watch_later">Watch later</string>
+    <!-- Button, ~20 characters: opens sign-in page. -->
+    <string name="ui_sign_in_with_google">てくぞねでログイン</string>
+    <!-- Name of the account's built-in playlist of videos saved for later. -->
+    <string name="ui_watch_later">後で見る</string>
     <!-- Name of the account's built-in playlist of liked videos. -->
-    <string name="ui_liked_videos">Liked videos</string>
+    <string name="ui_liked_videos">評価した動画</string>
 
     <!-- ── Long-press options on a video ──────────────────────────────────── -->
     <string name="ui_play_next">Play next</string>
@@ -79,48 +79,47 @@
     <!-- ── Sign-in ────────────────────────────────────────────────────────── -->
     <!-- Accessibility label of the X that leaves the sign-in page. -->
     <string name="ui_cancel">Cancel</string>
-    <string name="ui_sign_in_title">Sign in to YouTube</string>
-    <!-- Under the title of the sign-in page; keep "accounts.google.com" as it is. -->
-    <string name="ui_sign_in_line">accounts.google.com · kept encrypted on this phone</string>
-    <string name="ui_sign_in_error">Signed in, but YouTube didn\'t answer. Check your connection and try again.</string>
-    <string name="ui_finishing_sign_in">Finishing sign-in…</string>
+    <string name="ui_sign_in_title">てくぞねにログイン</string>
+    <string name="ui_sign_in_line">zone.techniclip.com · この端末に暗号化して保存</string>
+    <string name="ui_sign_in_error">ログイン情報を確認できませんでした。接続を確認して再試行してください。</string>
+    <string name="ui_finishing_sign_in">ログイン処理中…</string>
     <!-- Accessibility label of the account button when signed out. -->
-    <string name="ui_sign_in">Sign in</string>
-    <string name="ui_account_pitch_title">Your YouTube, without the ads</string>
-    <string name="ui_account_pitch_body">Sign in to get your recommendations, subscriptions, history and playlists. Likes, subscribes, Watch later and watch history sync back to your account.</string>
-    <string name="ui_sign_out">Sign out</string>
+    <string name="ui_sign_in">ログイン</string>
+    <string name="ui_account_pitch_title">てくにくりっぷ ぞーん（てくぞね）</string>
+    <string name="ui_account_pitch_body">ログインすると、フォロー中のクリエイターの新着動画、視聴履歴、評価した動画、再生リストが同期され、音声・映像・発想の3軸評価やコメント投稿が行えます。</string>
+    <string name="ui_sign_out">ログアウト</string>
 
     <!-- ── Home / Subscriptions / Library ─────────────────────────────────── -->
-    <string name="ui_home_signed_out_title">Your recommendations, minus the ads</string>
-    <string name="ui_home_signed_out_body">Sign in with Google to see your own YouTube home feed, or just search.</string>
-    <!-- Text link under "Sign in with Google" on Home when signed out. -->
-    <string name="ui_search_instead">Search instead</string>
+    <string name="ui_home_signed_out_title">てくにくりっぷ ぞーん</string>
+    <string name="ui_home_signed_out_body">てくぞねアカウントでログインすると、フォロー中の新着や再生リスト、評価が同期されます。</string>
+    <!-- Text link under "Sign in" on Home when signed out. -->
+    <string name="ui_search_instead">検索する</string>
     <!-- Page title (large header). -->
-    <string name="ui_subscriptions_title">Subscriptions</string>
-    <string name="ui_subscriptions_signed_out_title">Your subscriptions</string>
-    <string name="ui_subscriptions_signed_out_body">Sign in with Google to see new videos from the channels you follow.</string>
+    <string name="ui_subscriptions_title">フォロー中</string>
+    <string name="ui_subscriptions_signed_out_title">フォロー中のクリエイター</string>
+    <string name="ui_subscriptions_signed_out_body">てくぞねアカウントでログインすると、フォローしているクリエイターの新着動画が表示されます。</string>
     <!-- Page title (large header). -->
-    <string name="ui_library_title">Library</string>
-    <string name="ui_library_signed_out_title">Your library</string>
-    <string name="ui_library_signed_out_body">Sign in with Google for your history, Watch later, liked videos and playlists.</string>
+    <string name="ui_library_title">ライブラリ</string>
+    <string name="ui_library_signed_out_title">マイライブラリ</string>
+    <string name="ui_library_signed_out_body">てくぞねアカウントでログインすると、視聴履歴、評価した動画、再生リストが表示されます。</string>
     <!-- Section title in Library: videos watched. -->
-    <string name="ui_history">History</string>
-    <string name="ui_history_empty">Nothing watched yet.</string>
+    <string name="ui_history">履歴</string>
+    <string name="ui_history_empty">まだ視聴履歴がありません。</string>
     <!-- Section title in Library. -->
-    <string name="ui_playlists">Playlists</string>
-    <string name="ui_playlist_empty_title">Nothing here yet</string>
-    <string name="ui_playlist_empty_body">Videos you add to this playlist will show up here.</string>
+    <string name="ui_playlists">再生リスト</string>
+    <string name="ui_playlist_empty_title">まだ動画がありません</string>
+    <string name="ui_playlist_empty_body">再生リストに追加した動画がここに表示されます。</string>
 
     <!-- ── Search ─────────────────────────────────────────────────────────── -->
     <!-- Page title (large header). -->
-    <string name="ui_search_title">Search</string>
+    <string name="ui_search_title">検索</string>
     <!-- Hint inside the empty search field. -->
-    <string name="ui_search_hint">Search YouTube</string>
+    <string name="ui_search_hint">てくぞねを検索（曲: / 素材: / タグ: も可）</string>
     <!-- Accessibility label of the X that empties the search field. -->
-    <string name="ui_clear_search">Clear</string>
-    <string name="ui_search_error_title">Search didn\'t load</string>
-    <string name="ui_search_intro_title">Search without the ads</string>
-    <string name="ui_search_intro_body">Results play straight away, with no ads and no sign-in.</string>
+    <string name="ui_clear_search">クリア</string>
+    <string name="ui_search_error_title">検索結果を読み込めませんでした</string>
+    <string name="ui_search_intro_title">てくぞねを検索</string>
+    <string name="ui_search_intro_body">タイトル、クリエイター、原曲（曲:RED ZONE）、素材、タグから作品を検索できます。</string>
     <string name="ui_search_nothing_found">Nothing found</string>
     <!-- %1$s = what was searched for. -->
     <string name="ui_search_no_match">No videos matched “%1$s”.</string>

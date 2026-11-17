@@ -123,6 +123,10 @@ class OrientationController(private val activity: ComponentActivity) {
         }
     }
 
+    fun toggleLandscape(currentlyLandscape: Boolean) {
+        forced = if (currentlyLandscape) Forced.Portrait else Forced.Landscape
+    }
+
     fun setPlayerOpen(open: Boolean) {
         playerOpen = open
         if (!open) { forced = null; paneFullscreen = null; portraitFullscreen = false }

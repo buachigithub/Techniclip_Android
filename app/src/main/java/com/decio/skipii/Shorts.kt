@@ -43,9 +43,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
+import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.NotificationsNone
@@ -167,8 +173,8 @@ import androidx.compose.animation.core.Animatable
 internal val GlassHeight = 50.dp
 private val BackWidth = 50.dp
 private val GlassGap = 8.dp
-private val PillWidth = 236.dp
-/** The pill's four buttons spread over it minus this much at each rounded end. */
+private val PillWidth = 296.dp
+/** The pill's six buttons spread over it minus this much at each rounded end. */
 private val PillInset = 6.dp
 /** The tab bar's left end that becomes ‹ (its first slot). */
 private val BackFrom = 62.dp
@@ -947,21 +953,65 @@ class ShortsState(context: Context, private val scope: CoroutineScope) {
         }
     }
 
-    fun toggleLike() {
+    fun toggleRate(category: String) {
         val id = current?.id ?: return
         if (!Account.signedIn) { onMessage(str(R.string.shorts_sign_in_to_like)); return }
-        // Not known yet (the answer is on its way): like it now, without waiting.
+        val d = details[id]
+        val curRated = accountStates[id]?.rated ?: d?.ratedCategories ?: RatedCategories()
+        val curRatings = accountStates[id]?.ratings ?: d?.ratings ?: VideoRatings()
+        val nextActive = when (category) {
+            "audio" -> !curRated.audio
+            "visual" -> !curRated.visual
+            "idea" -> !curRated.idea
+            else -> return
+        }
+        val delta = if (nextActive) 1L else -1L
+        val nextRated = when (category) {
+            "audio" -> curRated.copy(audio = nextActive)
+            "visual" -> curRated.copy(visual = nextActive)
+            "idea" -> curRated.copy(idea = nextActive)
+            else -> curRated
+        }
+        val nextRatings = when (category) {
+            "audio" -> curRatings.copy(audio = (curRatings.audio + delta).coerceAtLeast(0L))
+            "visual" -> curRatings.copy(visual = (curRatings.visual + delta).coerceAtLeast(0L))
+            "idea" -> curRatings.copy(idea = (curRatings.idea + delta).coerceAtLeast(0L))
+            else -> curRatings
+        }
+        val nextLike = if (nextRated.any) LikeStatus.Like else LikeStatus.None
+        if (d != null) {
+            details[id] = d.copy(ratings = nextRatings, ratedCategories = nextRated, likes = nextRatings.total)
+        }
         val before = accountStates[id] ?: VideoAccountState(LikeStatus.None, subscribed = null, channelId = null)
-        val next = if (before.like == LikeStatus.Like) LikeStatus.None else LikeStatus.Like
-        accountStates[id] = before.copy(like = next)
+        accountStates[id] = before.copy(like = nextLike, ratings = nextRatings, rated = nextRated)
         scope.launch {
-            runCatching { InnerTube.setLike(id, next) }
+            runCatching { InnerTube.rateVideo(id, category) }
+                .onSuccess { updated ->
+                    if (updated >= 0L) {
+                        val currD = details[id]
+                        if (currD != null) {
+                            val synced = when (category) {
+                                "audio" -> currD.ratings.copy(audio = updated)
+                                "visual" -> currD.ratings.copy(visual = updated)
+                                "idea" -> currD.ratings.copy(idea = updated)
+                                else -> currD.ratings
+                            }
+                            details[id] = currD.copy(ratings = synced, likes = synced.total)
+                            accountStates[id]?.let { s -> accountStates[id] = s.copy(ratings = synced) }
+                        }
+                    }
+                }
                 .onFailure {
                     if (it is CancellationException) throw it
-                    accountStates[id]?.let { s -> accountStates[id] = s.copy(like = before.like) }
+                    if (d != null) details[id] = d
+                    accountStates[id] = before
                     onMessage(str(R.string.shorts_like_failed))
                 }
         }
+    }
+
+    fun toggleLike() {
+        toggleRate("idea")
     }
 
     /**
@@ -980,7 +1030,7 @@ class ShortsState(context: Context, private val scope: CoroutineScope) {
         if (!Account.signedIn) { onMessage(str(R.string.shorts_sign_in_to_subscribe)); return }
         val before = accountStates[id] ?: return
         val channelId = before.channelId
-            ?: details[id]?.item?.channelUrl?.substringAfter("/channel/", "")?.takeIf { it.startsWith("UC") }
+            ?: TekuZone.usernameFromUrl(details[id]?.item?.channelUrl)
             ?: return
         val subscribe = before.subscribed != true
         // Every loaded short from that channel shows it.
@@ -1268,6 +1318,8 @@ fun ShortsScreen(
     overlayBottom: Dp,
     shortFocus: FocusRequester = remember { FocusRequester() },
     barFocus: FocusRequester? = null,
+    landscape: Boolean = false,
+    onToggleOrientation: (() -> Unit)? = null,
 ) {
     // A TV remote (Tv.kt): the short itself takes focus — ▲ ▼ change short, OK pauses, ▶ goes to the glass bar's Like
     // (the short covers the screen, so nothing lies "to its right" for the D-pad to find).
@@ -1312,6 +1364,27 @@ fun ShortsScreen(
                 shorts.items.isNotEmpty() -> key(shorts.feedVersion) { ShortsPager(shorts, overlayBottom, progress) }
                 shorts.error != null && !shorts.loading -> ShortsProblem(shorts.error.orEmpty(), onRetry = shorts::refresh)
                 else -> CircularProgressIndicator(color = Ink, strokeWidth = 3.dp, modifier = Modifier.align(Alignment.Center).size(36.dp))
+            }
+        }
+        if (onToggleOrientation != null && !shorts.commentsOpen) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(top = 12.dp, end = 16.dp)
+                    .size(42.dp)
+                    .graphicsLayer { alpha = ramp(progress(), 0.4f, 1f) }
+                    .pressable(onClick = onToggleOrientation)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.42f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (landscape) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                    contentDescription = if (landscape) "縦画面に戻す" else "横画面にする",
+                    tint = Ink,
+                    modifier = Modifier.size(22.dp),
+                )
             }
         }
         if (shorts.commentsOpen) {
@@ -1478,8 +1551,20 @@ private fun ShortPage(shorts: ShortsState, page: Int, overlayBottom: Dp, barProg
                 window.foldX != null -> Modifier.fillMaxWidth().padding(start = videoWidth + 28.dp, end = 28.dp, bottom = overlayBottom + 8.dp)
                 else -> Modifier.width(videoStart).padding(start = 32.dp, end = 32.dp, bottom = 40.dp)
             }
+            val openChannel = LocalChannelOpener.current
             Column(Modifier.align(Alignment.BottomStart).then(textPlace).graphicsLayer { alpha = 1f - swell }) {
-                Text(details.item.channel, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = if (wide) 16.sp else 14.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, style = shade)
+                Text(
+                    details.item.channel,
+                    color = Ink,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = if (wide) 16.sp else 14.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = shade,
+                    modifier = Modifier.pressable(enabled = details.item.channelUrl != null) {
+                        details.item.channelUrl?.let(openChannel)
+                    },
+                )
                 if (details.item.title.isNotBlank()) {
                     Spacer(Modifier.height(6.dp))
                     Text(
@@ -1878,33 +1963,55 @@ fun ShortsBar(
             }
             val slot = g.slotWidth
             val tool = { k: Int -> { p: Float ->
-                val t = ramp(p, 0.26f + 0.07f * k, 0.6f + 0.07f * k)
+                val t = ramp(p, 0.24f + 0.05f * k, 0.56f + 0.05f * k)
                 Appear(alpha = ramp(t, 0f, 0.35f), dy = lerpF(14.dp.toPx(), 0f, decel(t)), scale = 0.6f + 0.4f * Motion.Pop.transform(t))
             } }
             val onPill = { r: Rect, x: Float -> r.left + (x - g.pillLeft) * r.width / g.pw }
-            GlassSlot(g, g.toolCenterX(0), slot, progress, piece = { g.right(it) }, follow = onPill, appear = tool(0), enabled = live, description = stringResource(R.string.shorts_like), focus = focus, onClick = shorts::toggleLike) {
-                val liked = account?.like == LikeStatus.Like
-                // Keyed so a short that arrives already liked (or loads its state) doesn't pop.
+            val rated = account?.rated ?: details?.ratedCategories ?: RatedCategories()
+            val ratings = account?.ratings ?: details?.ratings ?: VideoRatings()
+            val activeGold = Color(0xFFFFD54F)
+
+            GlassSlot(g, g.toolCenterX(0), slot, progress, piece = { g.right(it) }, follow = onPill, appear = tool(0), enabled = live, description = "音声を評価", focus = focus, onClick = { shorts.toggleRate("audio") }) {
+                val active = rated.audio
                 key(id, account != null) {
-                    Box(Modifier.optical(Mass.like, 22.dp)) {
-                        FlourishIcon(if (liked) LikedGlyph else LikeGlyph, null, active = liked, kind = Flourish.Pop, tint = Ink, size = 22.dp)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        FlourishIcon(Icons.Rounded.MusicNote, null, active = active, kind = Flourish.Pop, tint = if (active) activeGold else Ink, size = 20.dp)
+                        Text("${ratings.audio}", color = if (active) activeGold else Ink.copy(alpha = 0.85f), fontSize = 9.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
                 }
             }
-            GlassSlot(g, g.toolCenterX(1), slot, progress, piece = { g.right(it) }, follow = onPill, appear = tool(1), enabled = live, description = stringResource(R.string.shorts_comments), onClick = shorts::openComments) {
-                Icon(CommentGlyph, contentDescription = null, tint = Ink, modifier = Modifier.size(22.dp).optical(Mass.comment, 22.dp))
+            GlassSlot(g, g.toolCenterX(1), slot, progress, piece = { g.right(it) }, follow = onPill, appear = tool(1), enabled = live, description = "映像を評価", onClick = { shorts.toggleRate("visual") }) {
+                val active = rated.visual
+                key(id, account != null) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        FlourishIcon(Icons.Rounded.Movie, null, active = active, kind = Flourish.Pop, tint = if (active) activeGold else Ink, size = 20.dp)
+                        Text("${ratings.visual}", color = if (active) activeGold else Ink.copy(alpha = 0.85f), fontSize = 9.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
+                }
             }
-            GlassSlot(g, g.toolCenterX(2), slot, progress, piece = { g.right(it) }, follow = onPill, appear = tool(2), enabled = live, description = stringResource(R.string.shorts_share), onClick = {
+            GlassSlot(g, g.toolCenterX(2), slot, progress, piece = { g.right(it) }, follow = onPill, appear = tool(2), enabled = live, description = "発想を評価", onClick = { shorts.toggleRate("idea") }) {
+                val active = rated.idea
+                key(id, account != null) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        FlourishIcon(Icons.Rounded.Lightbulb, null, active = active, kind = Flourish.Pop, tint = if (active) activeGold else Ink, size = 20.dp)
+                        Text("${ratings.idea}", color = if (active) activeGold else Ink.copy(alpha = 0.85f), fontSize = 9.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
+                }
+            }
+            GlassSlot(g, g.toolCenterX(3), slot, progress, piece = { g.right(it) }, follow = onPill, appear = tool(3), enabled = live, description = stringResource(R.string.shorts_comments), onClick = shorts::openComments) {
+                Icon(CommentGlyph, contentDescription = null, tint = Ink, modifier = Modifier.size(21.dp).optical(Mass.comment, 21.dp))
+            }
+            GlassSlot(g, g.toolCenterX(4), slot, progress, piece = { g.right(it) }, follow = onPill, appear = tool(4), enabled = live, description = stringResource(R.string.shorts_share), onClick = {
                 val v = shorts.current ?: return@GlassSlot
-                shareLink(context, "https://youtube.com/shorts/${v.id}", shorts.details[v.id]?.item?.title ?: "")
+                shareLink(context, "${TekuZone.BASE_URL}/shorts/${v.id}", shorts.details[v.id]?.item?.title ?: "")
             }) {
-                Icon(ShareGlyph, contentDescription = null, tint = Ink, modifier = Modifier.size(23.dp).optical(Mass.share, 23.dp))
+                Icon(ShareGlyph, contentDescription = null, tint = Ink, modifier = Modifier.size(21.dp).optical(Mass.share, 21.dp))
             }
-            GlassSlot(g, g.toolCenterX(3), slot, progress, piece = { g.right(it) }, follow = onPill, appear = tool(3), enabled = live, description = stringResource(R.string.shorts_channel), onClick = shorts::toggleChannelMenu) {
+            GlassSlot(g, g.toolCenterX(5), slot, progress, piece = { g.right(it) }, follow = onPill, appear = tool(5), enabled = live, description = stringResource(R.string.shorts_channel), onClick = shorts::toggleChannelMenu) {
                 // The channel as drawn (no optical nudge: Derek, 2026-10-28), its badge + / ✓.
                 Box(Modifier.size(30.dp)) {
-                    ChannelAvatar(details?.item?.avatar, details?.item?.channel.orEmpty(), size = 30)
-                    if (Account.signedIn && account != null) {
+                    ChannelAvatar(details?.item?.avatar, details?.item?.channel.orEmpty(), size = 30, usernameOrUrl = details?.item?.channelUrl)
+                    if (Account.signedIn && account != null && !Account.isSelf(account.channelId ?: details?.item?.channelUrl)) {
                         val subscribed = account.subscribed == true
                         Box(
                             Modifier
@@ -1995,7 +2102,7 @@ private class GlassGeometry(val w: Float, val h: Float, density: Density) {
 
     val centerY get() = h - h2 / 2f
     val backCenterX get() = x0 + cw / 2f
-    val slotWidth get() = (pw - 2 * inset) / 4f
+    val slotWidth get() = (pw - 2 * inset) / 6f
     fun toolCenterX(k: Int) = pillLeft + inset + (k + 0.5f) * slotWidth
 
     fun split(p: Float) = decel(ramp(p, 0.04f, 0.66f))
@@ -2168,35 +2275,37 @@ fun ShortsChannelMenu(shorts: ShortsState, bottom: Dp, onChannel: (String) -> Un
             // Subscribed: the bell key sits at the row's end (as on the player's Subscribe button).
             val channelId = account?.channelId
             val toggleBell = rememberBellToggle(shorts.onMessage)
-            MenuRow(
-                icon = if (subscribed) Icons.Rounded.PersonRemove else Icons.Rounded.PersonAdd,
-                label = stringResource(if (subscribed) R.string.shorts_unsubscribe else R.string.shorts_subscribe),
-                enabled = open,
-                trailing = if (subscribed && channelId != null) {
-                    {
-                        val bell = Bells.isOn(channelId)
-                        Box(
-                            Modifier
-                                .squishOn(bell)
-                                .size(38.dp)
-                                .pressable(enabled = open) {
-                                    toggleBell(BellChannel(channelId, details?.item?.channel?.ifBlank { null }, details?.item?.avatar))
-                                }
-                                .clip(CircleShape)
-                                .background(if (bell) Ink else Ink.copy(alpha = 0.16f)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            FlourishIcon(
-                                if (bell) Icons.Rounded.NotificationsActive else Icons.Rounded.NotificationsNone,
-                                stringResource(if (bell) R.string.shorts_bell_on else R.string.shorts_bell_off),
-                                active = bell, kind = Flourish.Ring, tint = if (bell) Color(0xFF1A1A1A) else Ink, size = 20.dp,
-                            )
+            if (!Account.isSelf(channelId ?: details?.item?.channelUrl)) {
+                MenuRow(
+                    icon = if (subscribed) Icons.Rounded.PersonRemove else Icons.Rounded.PersonAdd,
+                    label = stringResource(if (subscribed) R.string.shorts_unsubscribe else R.string.shorts_subscribe),
+                    enabled = open,
+                    trailing = if (subscribed && channelId != null) {
+                        {
+                            val bell = Bells.isOn(channelId)
+                            Box(
+                                Modifier
+                                    .squishOn(bell)
+                                    .size(38.dp)
+                                    .pressable(enabled = open) {
+                                        toggleBell(BellChannel(channelId, details?.item?.channel?.ifBlank { null }, details?.item?.avatar))
+                                    }
+                                    .clip(CircleShape)
+                                    .background(if (bell) Ink else Ink.copy(alpha = 0.16f)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                FlourishIcon(
+                                    if (bell) Icons.Rounded.NotificationsActive else Icons.Rounded.NotificationsNone,
+                                    stringResource(if (bell) R.string.shorts_bell_on else R.string.shorts_bell_off),
+                                    active = bell, kind = Flourish.Ring, tint = if (bell) Color(0xFF1A1A1A) else Ink, size = 20.dp,
+                                )
+                            }
                         }
-                    }
-                } else null,
-            ) {
-                shorts.toggleSubscribe()
-                shorts.channelMenu = false
+                    } else null,
+                ) {
+                    shorts.toggleSubscribe()
+                    shorts.channelMenu = false
+                }
             }
             MenuRow(icon = Icons.Rounded.AccountCircle, label = stringResource(R.string.shorts_go_to_channel), enabled = open) {
                 shorts.channelMenu = false

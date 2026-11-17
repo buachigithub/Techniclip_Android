@@ -30,6 +30,9 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material.icons.rounded.WatchLater
@@ -83,7 +86,17 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import android.content.Intent
+import android.net.Uri
 import android.view.inputmethod.InputMethodManager
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.GroupWork
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
@@ -115,44 +128,230 @@ fun HomeScreen(
     shortsCard: (@Composable (Modifier) -> Unit)? = null,
 ) {
     val signedIn = Account.signedIn
-    LaunchedEffect(signedIn) { if (signedIn) lib.home.ensureLoaded() }
+    val context = LocalContext.current
+    var collabs by remember { mutableStateOf<List<CollaborationEvent>>(emptyList()) }
+    var selectedCollab by remember { mutableStateOf<CollaborationEvent?>(null) }
+    LaunchedEffect(signedIn) { lib.home.ensureLoaded() }
+    LaunchedEffect(Unit) {
+        runCatching { InnerTube.activeCollaborations() }.onSuccess { collabs = it }
+    }
     CollapsingHeaderLayout(
         resetKey = scrollToTop to lib.home.generation,
-        header = { ScreenHeader(title = "Skipii", brandMark = true) { UpdateAction(); AccountAction(onAccount) } },
+        header = { ScreenHeader(title = stringResource(R.string.app_name), brandMark = true) { AccountAction(onAccount) } },
     ) { top ->
-        if (signedIn) {
-            val home = lib.home
-            FeedList(home, contentPadding.withTop(top), onOpen, header = {
-                // Always present (empty until YouTube sends chips) so their arrival never shifts the list.
-                item(key = "chips") { if (home.chips.isNotEmpty()) HomeChips(home.chips, home.chip, home::selectChip) }
-                // A chip whose page held no videos: say so, never a blank page.
-                val chosen = home.chip
-                val plain = home.chips.firstOrNull { it.token == null }
-                if (chosen != null && home.loadedEmpty) item(key = "chipEmpty") {
-                    EmptyState(
-                        icon = Icons.Rounded.VideoLibrary,
-                        title = stringResource(R.string.ui_chip_empty_title),
-                        body = stringResource(R.string.ui_chip_empty_body, chosen.title),
-                        action = plain?.let { { PillButton(it.title, { home.selectChip(it) }) } },
-                    )
-                }
-            }, scrollToTop = scrollToTop, indicatorTop = top, gridExtra = shortsCard)
-        } else {
-            LazyColumn(contentPadding = contentPadding.withTop(top)) {
-                item {
-                    EmptyState(
-                        icon = Icons.Rounded.Subscriptions,
-                        title = stringResource(R.string.ui_home_signed_out_title),
-                        body = stringResource(R.string.ui_home_signed_out_body),
-                        action = {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                PillButton(stringResource(R.string.ui_sign_in_with_google), onSignIn)
-                                Spacer(Modifier.height(12.dp))
-                                TextLink(stringResource(R.string.ui_search_instead), onSearch)
+        val home = lib.home
+        FeedList(home, contentPadding.withTop(top), onOpen, header = {
+            item(key = "chips") { if (home.chips.isNotEmpty()) HomeChips(home.chips, home.chip, home::selectChip) }
+            if (collabs.isNotEmpty() && home.chip == null) {
+                item(key = "collabs") {
+                    ActiveCollaborationsSection(
+                        collabs = collabs,
+                        onSelect = { selectedCollab = it },
+                        onOpenBrowserCreate = {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse("${TekuZone.BASE_URL}/collaborations/new"))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
                             }
                         },
                     )
                 }
+            }
+            val chosen = home.chip
+            val plain = home.chips.firstOrNull { it.token == null }
+            if (chosen != null && home.loadedEmpty) item(key = "chipEmpty") {
+                EmptyState(
+                    icon = Icons.Rounded.VideoLibrary,
+                    title = stringResource(R.string.ui_chip_empty_title),
+                    body = stringResource(R.string.ui_chip_empty_body, chosen.title),
+                    action = plain?.let { { PillButton(it.title, { home.selectChip(it) }) } },
+                )
+            }
+        }, scrollToTop = scrollToTop, indicatorTop = top, gridExtra = shortsCard)
+    }
+    selectedCollab?.let { collab ->
+        CollaborationDetailSheet(
+            collab = collab,
+            onDismiss = { selectedCollab = null },
+            onOpenInBrowser = {
+                selectedCollab = null
+                runCatching {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse("${TekuZone.BASE_URL}/collaborations/${collab.id}"))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ActiveCollaborationsSection(
+    collabs: List<CollaborationEvent>,
+    onSelect: (CollaborationEvent) -> Unit,
+    onOpenBrowserCreate: () -> Unit,
+) {
+    val c = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 10.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.GroupWork, null, tint = c.primary, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text(
+                "開催中の合作",
+                fontFamily = RoundedHeavy,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 16.sp,
+                modifier = Modifier.weight(1f),
+            )
+            Row(
+                Modifier
+                    .pressable(onClick = onOpenBrowserCreate)
+                    .clip(CircleShape)
+                    .background(c.surfaceContainerHigh)
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("作成・編集", color = c.primary, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(3.dp))
+                Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, tint = c.primary, modifier = Modifier.size(13.dp))
+            }
+        }
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(collabs, key = { it.id }) { collab ->
+                Column(
+                    Modifier
+                        .width(236.dp)
+                        .pressable(pressedScale = 0.97f) { onSelect(collab) }
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(c.surfaceContainerLow)
+                        .padding(14.dp),
+                ) {
+                    Text(
+                        collab.title,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 14.5.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "締切: ${collab.endDate.ifBlank { "未定" }}",
+                        color = c.primary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                    if (collab.materialsInfo.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            collab.materialsInfo.replace("\r\n", " ").replace("\n", " "),
+                            color = c.onSurfaceVariant,
+                            fontSize = 11.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CollaborationDetailSheet(
+    collab: CollaborationEvent,
+    onDismiss: () -> Unit,
+    onOpenInBrowser: () -> Unit,
+) {
+    val c = MaterialTheme.colorScheme
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.surfaceContainerLow,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 560.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+        ) {
+            Text(
+                collab.title,
+                fontFamily = RoundedHeavy,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 21.sp,
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(c.primaryContainer)
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        "締切: ${collab.endDate.ifBlank { "未定" }}",
+                        color = c.onPrimaryContainer,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                if (collab.organizerTwitter.isNotBlank()) {
+                    Text(
+                        "主催: @${collab.organizerTwitter.removePrefix("@")}",
+                        color = c.onSurfaceVariant,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            if (collab.materialsInfo.isNotBlank()) {
+                Spacer(Modifier.height(14.dp))
+                Text("使用素材・原曲", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = c.primary)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    collab.materialsInfo,
+                    color = c.onSurface,
+                    fontSize = 13.5.sp,
+                    lineHeight = 19.sp,
+                )
+            }
+            if (collab.description.isNotBlank()) {
+                Spacer(Modifier.height(14.dp))
+                Text("詳細・ルール", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = c.primary)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    collab.description,
+                    color = c.onSurfaceVariant,
+                    fontSize = 13.5.sp,
+                    lineHeight = 20.sp,
+                )
+            }
+            Spacer(Modifier.height(20.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .pressable(onClick = onOpenInBrowser)
+                    .clip(CircleShape)
+                    .background(c.primary),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, tint = c.onPrimary, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("ブラウザで参加・編集する", color = c.onPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
             }
         }
     }
@@ -332,7 +531,7 @@ private fun ChannelRail(channels: List<ChannelRef>) {
     ) {
         items(channels, key = { it.id }) { ch ->
             Column(
-                Modifier.width(64.dp).pressable { openChannel("https://www.youtube.com/channel/${ch.id}") },
+                Modifier.width(64.dp).pressable { openChannel("${TekuZone.BASE_URL}/user/${ch.id}") },
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 ChannelAvatar(ch.avatar, ch.name, size = 56)
@@ -371,7 +570,6 @@ fun LibraryScreen(
             topPadding = top,
         ) {
         // Resolved here: the list's builder below isn't composable.
-        val watchLater = stringResource(R.string.ui_watch_later)
         val likedVideos = stringResource(R.string.ui_liked_videos)
         LazyColumn(state = rememberScrollToTop(scrollToTop), contentPadding = contentPadding.withTop(top)) {
             if (!signedIn) {
@@ -393,7 +591,7 @@ fun LibraryScreen(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        items(history.take(20), key = { "h-" + it.id }) { video -> HistoryCard(video) { onOpen(video) } }
+                        items(history.distinctBy { it.id }.take(20), key = { "h-" + it.id }) { video -> HistoryCard(video) { onOpen(video) } }
                     }
                     lib.history.loading -> Box(Modifier.fillMaxWidth().padding(24.dp), Alignment.Center) {
                         CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, strokeWidth = 4.dp, modifier = Modifier.size(28.dp))
@@ -405,15 +603,26 @@ fun LibraryScreen(
                     )
                 }
             }
-            item(key = "playlistsTitle") { SectionTitle(stringResource(R.string.ui_playlists)) }
+            item(key = "ratingsTitle") { SectionTitle("評価した動画") }
             val pinned = listOf(
-                PlaylistRef("WL", watchLater, null, null),
-                PlaylistRef("LL", likedVideos, null, null),
+                PlaylistRef("LL", likedVideos, null, "すべて・評価別"),
+                PlaylistRef("RATE_AUDIO", "音声を評価", null, "音声評価した動画"),
+                PlaylistRef("RATE_VISUAL", "映像を評価", null, "映像評価した動画"),
+                PlaylistRef("RATE_IDEA", "発想を評価", null, "発想評価した動画"),
             )
-            items((pinned + lib.playlists).chunked(2), key = { row -> row.joinToString { it.id } }) { row ->
+            items(pinned.chunked(2), key = { row -> "pinned-" + row.joinToString { it.id } }) { row ->
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     row.forEach { pl -> PlaylistTile(pl, Modifier.weight(1f)) { onOpenPlaylist(pl) } }
                     if (row.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+            if (lib.playlists.isNotEmpty()) {
+                item(key = "playlistsTitle") { SectionTitle(stringResource(R.string.ui_playlists)) }
+                items(lib.playlists.chunked(2), key = { row -> "pl-" + row.joinToString { it.id } }) { row ->
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        row.forEach { pl -> PlaylistTile(pl, Modifier.weight(1f)) { onOpenPlaylist(pl) } }
+                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                    }
                 }
             }
         }
@@ -439,8 +648,10 @@ private fun PlaylistTile(playlist: PlaylistRef, modifier: Modifier, onClick: () 
     val c = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(26.dp)
     val (icon, tone) = when (playlist.id) {
-        "WL" -> Icons.Rounded.WatchLater to c.primaryContainer
-        "LL" -> Icons.Rounded.ThumbUp to c.tertiaryContainer
+        "LL" -> Icons.Rounded.ThumbUp to c.primaryContainer
+        "RATE_AUDIO" -> Icons.Rounded.MusicNote to c.secondaryContainer
+        "RATE_VISUAL" -> Icons.Rounded.Movie to c.tertiaryContainer
+        "RATE_IDEA" -> Icons.Rounded.Lightbulb to c.primaryContainer
         else -> Icons.AutoMirrored.Rounded.PlaylistPlay to c.secondaryContainer
     }
     Column(

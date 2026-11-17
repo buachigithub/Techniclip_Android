@@ -190,7 +190,8 @@ private val FoldDistance = 70.dp
 private val OuterCorner = 21.dp
 private val InnerCorner = 7.dp
 private val JoinGap = 3.dp
-private const val SourceUrl = "https://github.com/deciocrytek/Skipii"
+private const val SourceUrl = "https://github.com/buachigithub/Techniclip_Android"
+private const val UpstreamUrl = "https://github.com/deciocrytek/Skipii"
 
 /**
  * The whole page. [active] is false while it slides away (its Back stops catching). Back goes up one
@@ -575,7 +576,7 @@ private fun FrontPage(player: PlayerState, entered: Boolean, selected: SettingsP
     Box(Modifier.riseIn(entered, 3)) { QuickToggles(player) }
     Column(Modifier.riseIn(entered, 4)) {
         GroupLabel(stringResource(R.string.settings_group_watching))
-        CategoryTiles(listOf(SettingsPage.Playback, SettingsPage.Captions, SettingsPage.SponsorBlock, SettingsPage.Shorts), selected, onOpen)
+        CategoryTiles(listOf(SettingsPage.Playback, SettingsPage.Captions, SettingsPage.Shorts), selected, onOpen)
     }
     Column(Modifier.riseIn(entered, 5)) {
         GroupLabel(stringResource(R.string.settings_group_look))
@@ -636,16 +637,16 @@ private fun QuickToggles(player: PlayerState) {
             QuickToggle(Icons.Rounded.Headphones, stringResource(R.string.bar_audio_only), AudioOnly.enabled, Modifier.weight(1f)) {
                 player.setAudioOnly(!AudioOnly.enabled)
             }
-            QuickToggle(Icons.Rounded.FastForward, stringResource(R.string.settings_sponsorblock), SponsorBlock.enabled, Modifier.weight(1f)) {
-                SponsorBlock.updateEnabled(!SponsorBlock.enabled)
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             QuickToggle(Icons.Rounded.SlowMotionVideo, stringResource(R.string.ui_shorts), ShortsSetting.enabled, Modifier.weight(1f)) {
                 ShortsSetting.set(context, !ShortsSetting.enabled)
             }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             QuickToggle(Icons.Rounded.Speed, stringResource(R.string.settings_speed_keep), PlaybackSpeed.remember, Modifier.weight(1f)) {
                 player.toggleRememberSpeed()
+            }
+            QuickToggle(Icons.Rounded.Contrast, "AMOLED", ThemeSettings.amoled, Modifier.weight(1f)) {
+                ThemeSettings.chooseAmoled(!ThemeSettings.amoled)
             }
         }
     }
@@ -820,35 +821,59 @@ private fun DeveloperCard(player: PlayerState, modifier: Modifier = Modifier) {
             .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(stringResource(R.string.settings_made_by, "@y7esdii"), fontWeight = FontWeight.Bold, fontSize = 16.sp, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(2.dp))
-        Text(stringResource(R.string.settings_say_hi), color = c.onSurfaceVariant, fontSize = 12.5.sp, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            IconDisc(rememberBrandIcon("Instagram", InstagramPath), "Instagram") { context.openOrSay(Intent(Intent.ACTION_VIEW, Uri.parse(InstagramUrl)), onMessage) }
-            IconDisc(rememberBrandIcon("Threads", ThreadsPath), "Threads") { context.openOrSay(Intent(Intent.ACTION_VIEW, Uri.parse(ThreadsUrl)), onMessage) }
-            IconDisc(rememberBrandIcon("X", XPath), "X") { context.openOrSay(Intent(Intent.ACTION_VIEW, Uri.parse(XUrl)), onMessage) }
-        }
+        androidx.compose.foundation.Image(
+            painter = androidx.compose.ui.res.painterResource(R.drawable.app_icon),
+            contentDescription = null,
+            modifier = Modifier.size(44.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "てくぞね (TechniClip Zone クライアント)",
+            fontFamily = RoundedHeavy,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 17.sp,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Skipii をベースに構築された「てくにくりっぷ ぞーん」専用クライアント",
+            color = c.onSurfaceVariant,
+            fontSize = 12.5.sp,
+            textAlign = TextAlign.Center,
+        )
         Spacer(Modifier.height(16.dp))
         Row(
             Modifier
                 .fillMaxWidth()
                 .pressable(pressedScale = 0.97f) {
-                    // SENDTO + mailto: only mail apps answer (SEND would offer every messaging app).
-                    context.openOrSay(
-                        Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$DeveloperEmail")).putExtra(Intent.EXTRA_SUBJECT, EmailSubject),
-                        onMessage,
-                    )
+                    context.openOrSay(Intent(Intent.ACTION_VIEW, Uri.parse(TekuZone.BASE_URL)), onMessage)
                 }
                 .clip(CircleShape)
-                .background(c.secondaryContainer)
-                .height(48.dp),
+                .background(c.primaryContainer)
+                .height(46.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Rounded.MailOutline, null, tint = c.onSecondaryContainer, modifier = Modifier.size(20.dp))
+            Icon(Icons.Rounded.PlayCircle, null, tint = c.onPrimaryContainer, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text(stringResource(R.string.settings_email_developer), color = c.onSecondaryContainer, fontWeight = FontWeight.Bold, fontSize = 14.5.sp)
+            Text("てくにくりっぷ ぞーん (Web版を開く)", color = c.onPrimaryContainer, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .pressable(pressedScale = 0.97f) {
+                    context.openOrSay(Intent(Intent.ACTION_VIEW, Uri.parse(SourceUrl)), onMessage)
+                }
+                .clip(CircleShape)
+                .background(c.secondaryContainer)
+                .height(44.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Code, null, tint = c.onSecondaryContainer, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("ソースコード (GPLv3 / GitHub)", color = c.onSecondaryContainer, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
         }
     }
 }
@@ -922,7 +947,6 @@ private fun summaryOf(page: SettingsPage): String = when (page) {
     }
     SettingsPage.About -> listOfNotNull(
         stringResource(R.string.settings_version, BuildConfig.VERSION_NAME),
-        AppUpdate.available?.let { stringResource(R.string.settings_update_available, it.version) },
         if (CrashLog.unshared) stringResource(R.string.settings_crash_tile) else null,
     ).joinDots()
     SettingsPage.Account -> Account.profile?.let { p -> listOfNotNull(p.name, p.handle).joinDots() } ?: stringResource(R.string.ui_account_pitch_title)
@@ -957,8 +981,7 @@ private fun phoneLanguageLabel(): String {
 }
 
 @Composable
-private fun updateStatus(): String = AppUpdate.available?.let { stringResource(R.string.settings_update_available, it.version) }
-    ?: stringResource(if (AppUpdate.checking) R.string.settings_checking else R.string.settings_up_to_date)
+private fun updateStatus(): String = "Google Play 版 (${BuildConfig.VERSION_NAME})"
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
@@ -969,7 +992,7 @@ private class Hit(val page: SettingsPage, val key: String?, val title: String, v
 
 /** Every setting, in the app's language. Built per search; cheap. */
 private fun entries(): List<Entry> = buildList {
-    SettingsPage.entries.forEach { add(Entry(it, null, str(it.titleRes), emptyList())) }
+    SettingsPage.entries.filter { it != SettingsPage.SponsorBlock }.forEach { add(Entry(it, null, str(it.titleRes), emptyList())) }
     val pb = SettingsPage.Playback
     add(Entry(pb, "controls", str(R.string.ui_player_controls), listOf(str(R.string.ui_player_controls_pill), str(R.string.ui_player_controls_on_video))))
     add(Entry(pb, "speed", str(R.string.settings_speed_remember_title), listOf(str(R.string.settings_speed_keep), str(R.string.bar_speed_remember))))
@@ -987,9 +1010,6 @@ private fun entries(): List<Entry> = buildList {
     add(Entry(cc, "look", str(R.string.captions_look), CaptionSettings.Look.entries.map { str(it.labelRes) }))
     add(Entry(cc, "size", str(R.string.captions_size), CaptionSettings.sizes.map { str(it.second) }))
     add(Entry(cc, "kept", str(R.string.captions_kept_languages), emptyList()))
-    val sb = SettingsPage.SponsorBlock
-    add(Entry(sb, "sb", str(R.string.settings_sponsorblock), listOf(str(R.string.ui_sponsorblock_line))))
-    SponsorBlock.Category.entries.forEach { add(Entry(sb, "sb_${it.key}", it.label, listOf(str(it.shortRes)))) }
     add(Entry(SettingsPage.Shorts, "shorts", str(R.string.ui_shorts), listOf(str(R.string.ui_shorts_on_line))))
     val ap = SettingsPage.Appearance
     add(Entry(ap, "mode", str(R.string.settings_mode), listOf(str(R.string.ui_mode_system), str(R.string.ui_mode_light), str(R.string.ui_mode_dark))))
@@ -1715,35 +1735,36 @@ private fun AccountPage(onSignIn: () -> Unit, onSignedOut: () -> Unit) {
 @Composable
 private fun AboutPage(player: PlayerState) {
     val context = LocalContext.current
-    var whatsNew by remember { mutableStateOf(false) }
     Spacer(Modifier.height(14.dp))
     val scope = rememberCoroutineScope()
     val shareTitle = stringResource(R.string.settings_crash_share)
-    Joined(3) { i, shape ->
-        if (i == 0) {
-            LinkSetting("version", shape, Icons.Rounded.SystemUpdateAlt, stringResource(R.string.settings_version, BuildConfig.VERSION_NAME), updateStatus()) {
-                if (AppUpdate.available != null) whatsNew = true else AppUpdate.checkNow()
+    Joined(4) { i, shape ->
+        when (i) {
+            0 -> LinkSetting("tekuzone", shape, Icons.Rounded.PlayCircle, "てくにくりっぷ ぞーん (てくぞね)", "SkipiiベースのTechniClip Zone公式クライアント") {
+                context.openOrSay(Intent(Intent.ACTION_VIEW, Uri.parse(TekuZone.BASE_URL))) { player.actionMessage = it }
             }
-        } else if (i == 1) {
-            // GitHub #55: what crashed (or how Android closed Skipii), to paste into an issue.
-            val line = stringResource(if (CrashLog.newest > 0L) R.string.settings_crash_saved else R.string.settings_crash_none)
-            LinkSetting("crash", shape, Icons.Rounded.BugReport, stringResource(R.string.settings_crash_title), line) {
-                scope.launch {
-                    val text = withContext(Dispatchers.IO) { CrashLog.report(context) }
-                    val send = Intent(Intent.ACTION_SEND).setType("text/plain")
-                        .putExtra(Intent.EXTRA_SUBJECT, "Skipii crash report")
-                        .putExtra(Intent.EXTRA_TEXT, text)
-                    context.openOrSay(Intent.createChooser(send, shareTitle)) { player.actionMessage = it }
-                    CrashLog.markShared()
+            1 -> LinkSetting("version", shape, Icons.Rounded.SystemUpdateAlt, stringResource(R.string.settings_version, BuildConfig.VERSION_NAME), updateStatus()) {
+                val playUri = Uri.parse("https://play.google.com/store/apps/details?id=${context.packageName}")
+                context.openOrSay(Intent(Intent.ACTION_VIEW, playUri)) { player.actionMessage = it }
+            }
+            2 -> {
+                val line = stringResource(if (CrashLog.newest > 0L) R.string.settings_crash_saved else R.string.settings_crash_none)
+                LinkSetting("crash", shape, Icons.Rounded.BugReport, stringResource(R.string.settings_crash_title), line) {
+                    scope.launch {
+                        val text = withContext(Dispatchers.IO) { CrashLog.report(context) }
+                        val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                            .putExtra(Intent.EXTRA_SUBJECT, "TekuZone crash report")
+                            .putExtra(Intent.EXTRA_TEXT, text)
+                        context.openOrSay(Intent.createChooser(send, shareTitle)) { player.actionMessage = it }
+                        CrashLog.markShared()
+                    }
                 }
             }
-        } else {
-            LinkSetting("source", shape, Icons.Rounded.Code, stringResource(R.string.settings_source), stringResource(R.string.settings_source_line)) {
+            else -> LinkSetting("source", shape, Icons.Rounded.Code, "ソースコード (GPLv3)", "buachigithub/Techniclip_Android (Based on Skipii)") {
                 context.openOrSay(Intent(Intent.ACTION_VIEW, Uri.parse(SourceUrl))) { player.actionMessage = it }
             }
         }
     }
-    if (whatsNew) AppUpdate.available?.let { WhatsNewSheet(it, onDismiss = { whatsNew = false }) }
 }
 
 private tailrec fun android.content.Context.findActivity(): android.app.Activity? = when (this) {

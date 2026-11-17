@@ -17,6 +17,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.runtime.SideEffect
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Column
@@ -40,10 +42,17 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ThumbDown
 import androidx.compose.material.icons.outlined.ThumbUp
+import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.Share
@@ -51,9 +60,12 @@ import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.ThumbDown
 import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -87,7 +99,9 @@ import kotlin.math.exp
 import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -95,6 +109,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.media3.ui.compose.PlayerSurface
+import coil.compose.AsyncImage
+import androidx.compose.ui.layout.ContentScale
 import androidx.media3.ui.compose.SURFACE_TYPE_TEXTURE_VIEW
 
 // ── Geometry shared with the morph (MainActivity builds MorphGeometry from these) ──
@@ -285,30 +301,36 @@ fun PlayerScreen(
                                 fontWeight = FontWeight.Medium,
                             )
                         }
+                        if (details != null) {
+                            VideoMetadataChips(details)
+                        }
                         Spacer(Modifier.height(16.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             val openChannel = LocalChannelOpener.current
                             val channelUrl = details?.item?.channelUrl ?: item.channelUrl
+                            val uname = TekuZone.usernameFromUrl(channelUrl) ?: item.channel.trim().removePrefix("@")
+                            val resolvedChannel = UserProfiles.names[uname] ?: details?.item?.channel ?: item.channel
                             // Avatar + name open the channel (the Subscribe button beside them doesn't).
                             Row(
                                 Modifier.weight(1f).pressable(enabled = channelUrl != null, pressedScale = 0.97f) { channelUrl?.let(openChannel) },
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                            ChannelAvatar(details?.item?.avatar ?: item.avatar, item.channel, size = 46)
+                            ChannelAvatar(details?.item?.avatar ?: item.avatar, resolvedChannel, size = 46, usernameOrUrl = channelUrl)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(item.channel, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(resolvedChannel, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 details?.subscribers?.takeIf { it > 0 }?.let {
                                     Text(subscribersLine(it), color = c.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 }
                             }
                             }
-                            state.accountState?.let { account ->
-                                val subscribed = account.subscribed ?: return@let
-                                val channelId = account.channelId ?: channelUrl?.substringAfter("/channel/", "")?.takeIf { it.startsWith("UC") }
+                            val account = state.accountState
+                            val channelId = account?.channelId ?: TekuZone.usernameFromUrl(channelUrl)
+                            if (Account.signedIn && !Account.isSelf(channelId ?: channelUrl)) {
+                                val subscribed = account?.subscribed == true
                                 SubscribeWithBell(
                                     subscribed,
-                                    channel = channelId?.let { BellChannel(it, item.channel.ifBlank { null }, details?.item?.avatar ?: item.avatar) },
+                                    channel = channelId?.let { BellChannel(it, resolvedChannel.ifBlank { null }, details?.item?.avatar ?: item.avatar) },
                                     onSubscribe = state::toggleSubscribe,
                                     onMessage = { state.actionMessage = it },
                                 )
@@ -684,6 +706,7 @@ private val FullscreenPull = 64.dp
  */
 @Composable
 private fun PlayerActions(state: PlayerState) {
+    var advertOpen by remember { mutableStateOf(false) }
     Row(
         Modifier
             .padding(top = 14.dp)
@@ -693,27 +716,241 @@ private fun PlayerActions(state: PlayerState) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (state.accountState != null) AccountActions(state)
+        AccountActions(state)
         val context = LocalContext.current
         val item = state.current
         ActionPill(
             icon = Icons.Rounded.Share,
-            label = stringResource(R.string.player_share),
+            label = null,
             active = false,
             flourish = null,
             shape = RoundedCornerShape(22.dp),
             description = stringResource(R.string.player_share),
-        ) { item?.let { shareLink(context, "https://youtu.be/${it.id}", it.title) } }
-        // Every line of the captions, tap to jump (TranscriptPanel); only when the video has captions.
+        ) { item?.let { shareLink(context, "${TekuZone.BASE_URL}/video/${it.id}", it.title) } }
+        ActionPill(
+            icon = Icons.Rounded.Campaign,
+            label = null,
+            active = false,
+            flourish = null,
+            shape = RoundedCornerShape(22.dp),
+            description = "この動画を広告する",
+        ) {
+            if (!Account.signedIn) {
+                state.actionMessage = "広告するにはログインが必要です"
+            } else if (item != null) {
+                advertOpen = true
+            }
+        }
         if (state.captions.tracks.isNotEmpty()) {
             ActionPill(
                 icon = Icons.Rounded.Subtitles,
-                label = stringResource(R.string.player_transcript),
+                label = null,
                 active = false,
                 flourish = null,
                 shape = RoundedCornerShape(22.dp),
                 description = stringResource(R.string.player_transcript),
             ) { state.sheet = PlayerSheet.Transcript }
+        }
+    }
+    if (advertOpen) {
+        state.current?.let { video ->
+            AdvertSheet(state = state, video = video, onDismiss = { advertOpen = false })
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun AdvertSheet(state: PlayerState, video: VideoItem, onDismiss: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    var userPoints by remember { mutableStateOf<Int?>(null) }
+    var pointsText by remember { mutableStateOf("100") }
+    var comment by remember { mutableStateOf("") }
+    var submitting by remember { mutableStateOf(false) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(video.id) {
+        runCatching { InnerTube.advertPoints() }
+            .onSuccess { userPoints = it }
+            .onFailure { userPoints = 0 }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.surfaceContainerLow,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
+            Text(
+                "この動画を広告する",
+                fontFamily = RoundedHeavy,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 21.sp,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                video.title,
+                color = c.onSurfaceVariant,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(14.dp))
+
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(c.primaryContainer)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Campaign, null, tint = c.onPrimaryContainer, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "所持ポイント",
+                    color = c.onPrimaryContainer,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    userPoints?.let { "${it} pt" } ?: "読込中…",
+                    color = c.onPrimaryContainer,
+                    fontFamily = RoundedHeavy,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 17.sp,
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Text("使用ポイント", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+            Spacer(Modifier.height(8.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(c.surfaceContainerHigh)
+                    .padding(horizontal = 16.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                if (pointsText.isEmpty()) {
+                    Text("ポイント数を入力", color = c.onSurfaceVariant, fontSize = 15.sp)
+                }
+                BasicTextField(
+                    value = pointsText,
+                    onValueChange = { v -> pointsText = v.filter { it.isDigit() }.take(7); errorMsg = null },
+                    singleLine = true,
+                    textStyle = TextStyle(color = c.onSurface, fontSize = 16.sp, fontWeight = FontWeight.Bold),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(c.primary),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(50 to "50pt (応援)", 100 to "100pt (1日)", 300 to "300pt (3日)", 500 to "500pt (5日)").forEach { (pt, label) ->
+                    val selected = pointsText == pt.toString()
+                    Box(
+                        Modifier
+                            .pressable { pointsText = pt.toString(); errorMsg = null }
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (selected) c.primary else c.surfaceContainerHigh)
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                    ) {
+                        Text(
+                            label,
+                            color = if (selected) c.onPrimary else c.onSurfaceVariant,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "100pt = 1日間広告として掲示。100pt未満は応援コメントとして投稿されます。",
+                color = c.onSurfaceVariant,
+                fontSize = 11.5.sp,
+                lineHeight = 16.sp,
+            )
+
+            Spacer(Modifier.height(14.dp))
+            Text("宣伝コメント（任意）", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+            Spacer(Modifier.height(8.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 76.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(c.surfaceContainerHigh)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                if (comment.isEmpty()) {
+                    Text("コメントを入力（最大200文字）", color = c.onSurfaceVariant, fontSize = 14.sp)
+                }
+                BasicTextField(
+                    value = comment,
+                    onValueChange = { comment = it.take(200); errorMsg = null },
+                    textStyle = TextStyle(color = c.onSurface, fontSize = 14.sp, lineHeight = 20.sp),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(c.primary),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            if (errorMsg != null) {
+                Spacer(Modifier.height(10.dp))
+                Text(errorMsg!!, color = c.error, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+
+            Spacer(Modifier.height(18.dp))
+            val pts = pointsText.toIntOrNull() ?: 0
+            val canSubmit = !submitting && pts > 0 && (userPoints == null || pts <= userPoints!!)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .pressable(enabled = canSubmit) {
+                        val available = userPoints ?: 0
+                        if (pts > available) {
+                            errorMsg = "所持ポイント（${available}pt）を超えています"
+                            return@pressable
+                        }
+                        submitting = true
+                        errorMsg = null
+                        scope.launch {
+                            runCatching { InnerTube.createAdvert(video.id, pts, comment.trim()) }
+                                .onSuccess { msg ->
+                                    submitting = false
+                                    state.actionMessage = msg
+                                    StreamCache.invalidate(video.id)
+                                    state.comments.load(video.id)
+                                    onDismiss()
+                                }
+                                .onFailure { e ->
+                                    submitting = false
+                                    errorMsg = e.message ?: "広告の出稿に失敗しました"
+                                }
+                        }
+                    }
+                    .clip(CircleShape)
+                    .background(if (canSubmit) c.primary else c.surfaceContainerHighest),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (submitting) {
+                    CircularProgressIndicator(color = c.onPrimary, strokeWidth = 2.5.dp, modifier = Modifier.size(22.dp))
+                } else {
+                    Text(
+                        if (pts in 1..99) "応援コメントを出す" else "広告を出す",
+                        color = if (canSubmit) c.onPrimary else c.onSurfaceVariant,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 15.sp,
+                    )
+                }
+            }
         }
     }
 }
@@ -727,42 +964,140 @@ private fun Modifier.bleed(x: androidx.compose.ui.unit.Dp) = layout { measurable
     layout(placeable.width - extra, placeable.height) { placeable.place(-extra / 2, 0) }
 }
 
-/** Connected like | dislike group and Playlist (Watch later is its first row), all synced to the account; placed in [PlayerActions]' row. */
+/** Clickable chips for 原曲 (`sources`), 素材 (`characters`), and タグ (`tags`) that jump to Search. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun VideoMetadataChips(details: VideoDetails) {
+    val sources = details.sources
+    val characters = details.characters
+    val tags = details.tags
+    if (sources.isEmpty() && characters.isEmpty() && tags.isEmpty()) return
+    LaunchedEffect(characters) {
+        if (characters.isNotEmpty()) CharacterImages.ensureLoaded()
+    }
+    val searchTag = LocalTagSearch.current
+    val c = MaterialTheme.colorScheme
+    FlowRow(
+        modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        sources.forEach { src ->
+            MetaSearchChip(
+                label = src,
+                bg = c.secondaryContainer,
+                fg = c.onSecondaryContainer,
+                onClick = { searchTag("曲:$src") },
+            )
+        }
+        characters.forEach { ch ->
+            MetaSearchChip(
+                label = ch,
+                bg = c.tertiaryContainer,
+                fg = c.onTertiaryContainer,
+                bgImage = CharacterImages.urlFor(ch),
+                onClick = { searchTag("素材:$ch") },
+            )
+        }
+        tags.forEach { tag ->
+            MetaSearchChip(
+                label = "#$tag",
+                bg = c.surfaceContainerHigh,
+                fg = c.primary,
+                onClick = { searchTag("タグ:$tag") },
+            )
+        }
+    }
+}
+
+@Composable
+private fun MetaSearchChip(label: String, bg: Color, fg: Color, bgImage: String? = null, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .heightIn(min = 32.dp)
+            .pressable(pressedScale = 0.96f, onClick = onClick)
+            .clip(RoundedCornerShape(14.dp))
+            .background(bg),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bgImage != null) {
+            AsyncImage(
+                model = bgImage,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.CenterEnd,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .size(width = 40.dp, height = 30.dp)
+                    .padding(end = 2.dp)
+                    .graphicsLayer { alpha = 0.42f },
+            )
+        }
+        Text(
+            text = label,
+            color = fg,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(
+                start = 12.dp,
+                end = if (bgImage != null) 18.dp else 12.dp,
+                top = 6.dp,
+                bottom = 6.dp,
+            ),
+        )
+    }
+}
+
+/** TechniClip Zone 3軸評価 (音声・映像・発想) + 再生リスト保存. */
 @Composable
 private fun AccountActions(state: PlayerState) {
-    val like = state.accountState?.like ?: LikeStatus.None
-    var lastLikes by remember { mutableStateOf(state.displayLikes) }
-    val likes = state.displayLikes
-    val rising = likes >= lastLikes
-    SideEffect { lastLikes = likes }
-    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+    val ratings = state.details?.ratings ?: VideoRatings()
+    val rated = state.details?.ratedCategories ?: RatedCategories()
+
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         ActionPill(
-            icon = if (like == LikeStatus.Like) Icons.Rounded.ThumbUp else Icons.Outlined.ThumbUp,
-            label = likes.takeIf { it > 0 }?.let { formatCount(it) },
-            active = like == LikeStatus.Like,
+            icon = Icons.Rounded.MusicNote,
+            label = "${ratings.audio}",
+            active = rated.audio,
             flourish = Flourish.Pop,
-            labelRollsUp = rising,
-            shape = RoundedCornerShape(topStart = 22.dp, bottomStart = 22.dp, topEnd = 8.dp, bottomEnd = 8.dp),
-            description = stringResource(R.string.player_like),
-        ) { state.setLike(LikeStatus.Like) }
+            labelRollsUp = true,
+            shape = RoundedCornerShape(22.dp),
+            description = "音声を評価",
+        ) { state.toggleRate("audio") }
+
         ActionPill(
-            icon = if (like == LikeStatus.Dislike) Icons.Rounded.ThumbDown else Icons.Outlined.ThumbDown,
-            label = null,
-            active = like == LikeStatus.Dislike,
-            flourish = Flourish.Droop,
-            shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp, topEnd = 22.dp, bottomEnd = 22.dp),
-            description = stringResource(R.string.player_dislike),
-        ) { state.setLike(LikeStatus.Dislike) }
+            icon = Icons.Rounded.Movie,
+            label = "${ratings.visual}",
+            active = rated.visual,
+            flourish = Flourish.Pop,
+            labelRollsUp = true,
+            shape = RoundedCornerShape(22.dp),
+            description = "映像を評価",
+        ) { state.toggleRate("visual") }
+
+        ActionPill(
+            icon = Icons.Rounded.Lightbulb,
+            label = "${ratings.idea}",
+            active = rated.idea,
+            flourish = Flourish.Pop,
+            labelRollsUp = true,
+            shape = RoundedCornerShape(22.dp),
+            description = "発想を評価",
+        ) { state.toggleRate("idea") }
     }
-    // Any of the account's playlists (GitHub issue #12).
-    ActionPill(
-        icon = Icons.Rounded.LibraryAdd,
-        label = stringResource(R.string.player_playlist),
-        active = false,
-        flourish = null,
-        shape = RoundedCornerShape(22.dp),
-        description = stringResource(R.string.player_save_to_playlist),
-    ) { state.current?.let(state::openPlaylists) }
+
+    if (Account.signedIn) {
+        ActionPill(
+            icon = Icons.Rounded.LibraryAdd,
+            label = null,
+            active = false,
+            flourish = null,
+            shape = RoundedCornerShape(22.dp),
+            description = stringResource(R.string.player_save_to_playlist),
+        ) { state.current?.let(state::openPlaylists) }
+    }
 }
 
 @Composable

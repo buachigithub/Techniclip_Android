@@ -194,21 +194,33 @@ object NewVideos {
      * The feed's title and entries, newest first, read only up to the first entry in [seen] (all
      * of it, up to [MAX_FEED_BYTES], the first time). Closing early drops the rest unread.
      */
-    private fun fetchFeed(channelId: String, seen: Set<String>): Pair<String?, List<FeedEntry>> {
+    private fun fetchFeed(channelId: String, @Suppress("UNUSED_PARAMETER") seen: Set<String>): Pair<String?, List<FeedEntry>> {
+        val uname = TekuZone.usernameFromUrl(channelId) ?: channelId
+        val encoded = java.net.URLEncoder.encode(uname, "UTF-8")
         val request = Request.Builder()
-            .url("https://www.youtube.com/feeds/videos.xml?channel_id=$channelId")
+            .url("${TekuZone.BASE_URL}/api/user/$encoded")
             .header("User-Agent", Net.USER_AGENT)
             .build()
         Net.client.newCall(request).execute().use { r ->
             if (!r.isSuccessful) throw IOException("feed ${r.code}")
-            val source = r.body?.source() ?: return null to emptyList()
-            val bytes = okio.Buffer()
-            val marks = seen.map { "<yt:videoId>$it</yt:videoId>".encodeUtf8() }
-            while (bytes.size < MAX_FEED_BYTES && source.read(bytes, 8192) != -1L) {
-                // Stop once an entry we already know has shown up: everything newer is above it.
-                if (marks.any { bytes.indexOf(it) >= 0 }) break
+            val o = org.json.JSONObject(r.body?.string().orEmpty().ifBlank { "{}" })
+            val name = o.optString("name").ifBlank { uname }
+            val arr = o.optJSONArray("videos") ?: org.json.JSONArray()
+            val entries = (0 until arr.length()).mapNotNull { i ->
+                val v = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = v.optString("id").ifBlank { return@mapNotNull null }
+                val title = v.optString("title").ifBlank { return@mapNotNull null }
+                val rawTs = v.optString("upload_time").trim()
+                val published = runCatching {
+                    when {
+                        rawTs.endsWith("Z") || '+' in rawTs.drop(10) -> OffsetDateTime.parse(rawTs).toInstant().toEpochMilli()
+                        'T' in rawTs -> java.time.LocalDateTime.parse(rawTs).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+                        else -> System.currentTimeMillis()
+                    }
+                }.getOrDefault(System.currentTimeMillis())
+                FeedEntry(id, title, published, short = false)
             }
-            return parseFeed(bytes.readUtf8())
+            return name to entries
         }
     }
 
@@ -235,7 +247,7 @@ object NewVideos {
 
     private fun notify(context: Context, ch: BellChannel, channelName: String, entry: FeedEntry) {
         if (!canNotify(context)) return
-        val thumbnail = runCatching { fetchBitmap("https://i.ytimg.com/vi/${entry.id}/mqdefault.jpg") }.getOrNull()
+        val thumbnail = runCatching { fetchBitmap("${TekuZone.BASE_URL}/thumbnails/${entry.id}.jpg") }.getOrNull()
         val open = Intent(context, MainActivity::class.java)
             .setAction(Intent.ACTION_VIEW)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -282,8 +294,8 @@ object NewVideos {
             id = id,
             title = intent.getStringExtra(EXTRA_TITLE).orEmpty(),
             channel = intent.getStringExtra(EXTRA_CHANNEL).orEmpty(),
-            channelUrl = intent.getStringExtra(EXTRA_CHANNEL_ID)?.let { "https://www.youtube.com/channel/$it" },
-            thumbnail = "https://i.ytimg.com/vi/$id/hqdefault.jpg",
+            channelUrl = intent.getStringExtra(EXTRA_CHANNEL_ID)?.let { "${TekuZone.BASE_URL}/user/$it" },
+            thumbnail = "${TekuZone.BASE_URL}/thumbnails/$id.jpg",
             avatar = intent.getStringExtra(EXTRA_AVATAR),
             durationSec = 0, views = 0, uploaded = null,
         )

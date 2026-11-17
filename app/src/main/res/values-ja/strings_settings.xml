@@ -32,8 +32,8 @@
     <string name="settings_bell_line">新しい動画すべて</string>
     <string name="settings_system_notifications">Android の通知設定</string>
     <string name="settings_system_notifications_line">音、バイブレーション、サイレント モード</string>
-    <string name="settings_full_sync">Google でログイン中 · 完全同期</string>
-    <string name="settings_sync_note">完全同期がオンです。高評価、チャンネル登録、後で見る、再生履歴がアカウントに反映されます。</string>
+    <string name="settings_full_sync">てくぞねでログイン中 · 完全同期</string>
+    <string name="settings_sync_note">完全同期がオンです。評価、フォロー、再生リスト、再生履歴がアカウントに反映されます。</string>
     <string name="settings_version">バージョン %1$s</string>
     <string name="settings_up_to_date">最新です · タップして確認</string>
     <string name="settings_checking">アップデートを確認しています…</string>

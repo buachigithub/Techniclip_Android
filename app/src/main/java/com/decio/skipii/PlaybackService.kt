@@ -47,8 +47,6 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
-import org.schabi.newpipe.extractor.services.youtube.dashmanifestcreators.YoutubeProgressiveDashManifestCreator
-import org.schabi.newpipe.extractor.stream.Stream
 import java.io.ByteArrayInputStream
 import java.util.concurrent.Executors
 
@@ -303,7 +301,7 @@ private class WatchTimeReporter(private val player: ExoPlayer) : Player.Listener
         if (id == videoId) return
         finish()
         videoId = id
-        if (id == null || !Account.signedIn) return
+        if (id == null) return
         startedAt = android.os.SystemClock.elapsedRealtime()
         if (player.isPlaying) startStretch()
         io.execute {
@@ -314,7 +312,7 @@ private class WatchTimeReporter(private val player: ExoPlayer) : Player.Listener
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
-        if (videoId == null || !Account.signedIn) return
+        if (videoId == null) return
         if (isPlaying) {
             startStretch()
         } else {
@@ -527,10 +525,7 @@ private class SponsorSkipper(private val player: ExoPlayer) : Player.Listener {
 }
 
 /**
- * Builds the media source for a video ID. YouTube serves video and audio as separate
- * streams, so they're merged. Each is wrapped in a generated DASH manifest — the same
- * technique NewPipe uses — which makes ExoPlayer fetch in ranged chunks; requesting a
- * whole stream in one go gets throttled to a crawl. The Shorts players (Shorts.kt) use it too.
+ * Builds the media source for a TechniClip Zone video ID (HLS .m3u8 or progressive MP4).
  */
 @OptIn(UnstableApi::class)
 internal class YouTubeMediaSourceFactory(context: Context) : MediaSource.Factory {
@@ -549,75 +544,15 @@ internal class YouTubeMediaSourceFactory(context: Context) : MediaSource.Factory
     override fun getSupportedTypes(): IntArray = fallback.supportedTypes
 
     override fun createMediaSource(mediaItem: MediaItem): MediaSource {
-        val info = StreamCache.get(mediaItem.mediaId) ?: return fallback.createMediaSource(mediaItem)
-        val picked = StreamSelection.pick(info)
-        // Auto: every quality as one adaptive set. A chosen quality stays pinned below.
-        if (QualityPreference.height == null && picked.audio != null) {
-            val adaptive = adaptiveVideo(info, mediaItem)
-            if (adaptive != null) {
-                Log.i("Skipii", "media source ${mediaItem.mediaId}: adaptive video ${StreamSelection.autoLadder(info).joinToString("/") { "${it.height}" }}p + audio itag ${picked.audio.itag}")
-                return MergingMediaSource(true, true, adaptive, source(picked.audio, info.duration, mediaItem))
-            }
+        val id = mediaItem.mediaId.ifBlank { null }
+        val record = id?.let { StreamCache.get(it) ?: runCatching { StreamCache.getOrLoad(it) }.getOrNull() }
+        val streamUrl = record?.streamUrl?.takeIf { it.isNotBlank() }
+        val resolvedItem = if (streamUrl != null) {
+            mediaItem.buildUpon().setUri(Uri.parse(streamUrl)).build()
+        } else {
+            mediaItem
         }
-        Log.i(
-            "Skipii",
-            "media source ${mediaItem.mediaId}: " + if (picked.usesSeparate) "video itag ${picked.video?.itag} (${picked.video?.height}p) + audio itag ${picked.audio?.itag}"
-            else "combined fallback itag ${picked.muxed?.itag} (${picked.muxed?.height}p); video=${picked.video != null} audio=${picked.audio != null}; " +
-                "audio offered: " + info.audioStreams.joinToString { "${it.itag}/${it.format}/${it.deliveryMethod}/url=${it.isUrl}/${it.audioTrackType}" },
-        )
-        val video = picked.video
-        val audio = picked.audio
-        return when {
-            video != null && audio != null -> MergingMediaSource(
-                /* adjustPeriodTimeOffsets = */ true,
-                /* clipDurations = */ true,
-                source(video, info.duration, mediaItem),
-                source(audio, info.duration, mediaItem),
-            )
-            picked.muxed != null -> source(picked.muxed, info.duration, mediaItem)
-            // Nothing playable: let the default factory fail on the watch URL so the
-            // player reports an error instead of hanging.
-            else -> fallback.createMediaSource(mediaItem)
-        }
-    }
-
-    /**
-     * One DASH adaptation set holding every rung of the Auto ladder. NewPipe generates a
-     * manifest per stream; their single representations are lifted into one set so the
-     * player can start low and switch up at segment boundaries.
-     */
-    private fun adaptiveVideo(info: org.schabi.newpipe.extractor.stream.StreamInfo, mediaItem: MediaItem): MediaSource? {
-        val durationSec = info.duration.takeIf { it > 0 } ?: return null
-        val manifests = StreamSelection.autoLadder(info).mapNotNull { stream ->
-            runCatching {
-                val xml = YoutubeProgressiveDashManifestCreator.fromProgressiveStreamingUrl(stream.content, stream.itagItem!!, durationSec)
-                DashManifestParser().parse(Uri.parse(stream.content), ByteArrayInputStream(xml.toByteArray()))
-            }.getOrNull()
-        }
-        if (manifests.size < 2) return null
-        val representations = manifests.map { it.getPeriod(0).adaptationSets[0].representations[0] }
-        val base = manifests.first()
-        val manifest = DashManifest(
-            base.availabilityStartTimeMs, base.durationMs, base.minBufferTimeMs, false,
-            C.TIME_UNSET, C.TIME_UNSET, C.TIME_UNSET, C.TIME_UNSET, null, null, null, null,
-            listOf(Period("0", 0, listOf(AdaptationSet(0, C.TRACK_TYPE_VIDEO, representations, emptyList(), emptyList(), emptyList())))),
-        )
-        return DashMediaSource.Factory(dataSourceFactory).createMediaSource(manifest, mediaItem)
-    }
-
-    private fun source(stream: Stream, durationSec: Long, mediaItem: MediaItem): MediaSource {
-        val url = stream.content
-        val itag = stream.itagItem
-        if (itag != null && durationSec > 0) {
-            val dash = runCatching {
-                val xml = YoutubeProgressiveDashManifestCreator.fromProgressiveStreamingUrl(url, itag, durationSec)
-                val manifest = DashManifestParser().parse(Uri.parse(url), ByteArrayInputStream(xml.toByteArray()))
-                DashMediaSource.Factory(dataSourceFactory).createMediaSource(manifest, mediaItem)
-            }.getOrNull()
-            if (dash != null) return dash
-        }
-        // Manifest generation failed: plain progressive still plays, just less efficiently.
-        return ProgressiveMediaSource.Factory(dataSourceFactory)
-            .createMediaSource(mediaItem.buildUpon().setUri(url).build())
+        Log.i("Skipii", "media source $id: url=${resolvedItem.localConfiguration?.uri} (hls=${record?.isHls})")
+        return fallback.createMediaSource(resolvedItem)
     }
 }

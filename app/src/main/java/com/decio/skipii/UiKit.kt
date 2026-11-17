@@ -1,7 +1,9 @@
 package com.decio.skipii
 
 import java.util.Locale
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -144,16 +146,12 @@ fun ScreenHeader(
 
 @Composable
 fun BrandMark() {
-    val c = MaterialTheme.colorScheme
-    Box(
-        modifier = Modifier
-            .size(width = 40.dp, height = 30.dp)
-            .clip(RoundedCornerShape(11.dp))
-            .background(Brush.linearGradient(listOf(c.primary, c.primary.copy(alpha = 0.82f)))),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(Icons.Rounded.FastForward, contentDescription = null, tint = c.onPrimary, modifier = Modifier.size(20.dp))
-    }
+    Image(
+        painter = painterResource(R.drawable.app_icon),
+        contentDescription = null,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier.size(34.dp),
+    )
 }
 
 @Composable
@@ -226,6 +224,9 @@ fun Modifier.prefetchOnPress(videoId: String): Modifier = pointerInput(videoId) 
 /** Long-pressing any video opens its options (Play next, Add to queue, …). Provided by the app shell. */
 val LocalVideoMenu = staticCompositionLocalOf<(VideoItem) -> Unit> { {} }
 
+/** Opens the Search tab and runs a query (e.g. `タグ:...`, `曲:...`, `素材:...`). Provided by the app shell. */
+val LocalTagSearch = staticCompositionLocalOf<(String) -> Unit> { {} }
+
 @Composable
 fun Thumbnail(url: String?, modifier: Modifier = Modifier, radius: Int = 22) {
     AsyncImage(
@@ -256,20 +257,29 @@ fun DurationPill(seconds: Long, modifier: Modifier = Modifier, small: Boolean = 
  * Only someone with no picture at all gets the cookie-shaped initial.
  */
 @Composable
-fun ChannelAvatar(url: String?, name: String, size: Int = 40) {
+fun ChannelAvatar(url: String?, name: String, size: Int = 40, usernameOrUrl: String? = null) {
     val c = MaterialTheme.colorScheme
+    val key = remember(usernameOrUrl, name) {
+        (usernameOrUrl?.let { if ("/" in it) TekuZone.usernameFromUrl(it) else it.removePrefix("@") }
+            ?: name.trim().removePrefix("@")).takeIf { it.isNotEmpty() && it != "unknown" && it != "ゲスト" && it != "Unknown" }
+    }
+    androidx.compose.runtime.LaunchedEffect(url, key) {
+        if (url == null && key != null) UserProfiles.resolve(key)
+    }
+    val resolvedUrl = url ?: key?.let { UserProfiles.avatars[it] }
+    val displayName = (key?.let { UserProfiles.names[it] } ?: name).ifBlank { "?" }
     Box(
-        modifier = Modifier.size(size.dp).clip(if (url != null) CircleShape else CookieShape).background(c.tertiaryContainer),
+        modifier = Modifier.size(size.dp).clip(if (resolvedUrl != null) CircleShape else CookieShape).background(c.tertiaryContainer),
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            name.trim().trimStart('@').take(1).uppercase(),
+            displayName.trim().trimStart('@').take(1).uppercase(),
             color = c.onTertiaryContainer,
             fontWeight = FontWeight.Black,
             fontSize = (size * 0.4f).sp,
         )
-        if (url != null) {
-            AsyncImage(model = url, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(size.dp))
+        if (resolvedUrl != null) {
+            AsyncImage(model = resolvedUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(size.dp))
         }
     }
 }
@@ -289,6 +299,10 @@ fun VideoCard(video: VideoItem, onClick: () -> Unit, modifier: Modifier = Modifi
     val lift by animateFloatAsState(if (focused) 1f else 0f, tween(160), label = "cardLift")
     // The card that opened the video gets the remote back when the TV player closes (TvFocusMemory).
     val opener = remember { FocusRequester() }
+    val uname = remember(video.channelUrl, video.channel) {
+        TekuZone.usernameFromUrl(video.channelUrl) ?: video.channel.trim().removePrefix("@")
+    }
+    val resolvedChannel = UserProfiles.names[uname] ?: video.channel
     Column(
         modifier = modifier
             .padding(horizontal = 6.dp, vertical = 7.dp)
@@ -313,7 +327,7 @@ fun VideoCard(video: VideoItem, onClick: () -> Unit, modifier: Modifier = Modifi
             val openChannel = LocalChannelOpener.current
             // On a TV the card is one stop for the remote: the channel is in its long-press menu.
             Box(Modifier.pressable(enabled = video.channelUrl != null && !tv) { video.channelUrl?.let(openChannel) }) {
-                ChannelAvatar(video.avatar, video.channel)
+                ChannelAvatar(video.avatar, resolvedChannel, usernameOrUrl = video.channelUrl)
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -326,7 +340,9 @@ fun VideoCard(video: VideoItem, onClick: () -> Unit, modifier: Modifier = Modifi
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(4.dp))
-                CardMeta(video)
+                Box(Modifier.pressable(enabled = video.channelUrl != null && !tv) { video.channelUrl?.let(openChannel) }) {
+                    CardMeta(video.copy(channel = resolvedChannel))
+                }
             }
         }
     }
@@ -370,6 +386,11 @@ private fun CardMeta(video: VideoItem) {
 fun VideoRow(video: VideoItem, onClick: () -> Unit, trailing: (@Composable () -> Unit)? = null) {
     val c = MaterialTheme.colorScheme
     val menu = LocalVideoMenu.current
+    val openChannel = LocalChannelOpener.current
+    val uname = remember(video.channelUrl, video.channel) {
+        TekuZone.usernameFromUrl(video.channelUrl) ?: video.channel.trim().removePrefix("@")
+    }
+    val resolvedChannel = UserProfiles.names[uname] ?: video.channel
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -385,15 +406,22 @@ fun VideoRow(video: VideoItem, onClick: () -> Unit, trailing: (@Composable () ->
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(video.title, fontWeight = FontWeight.Bold, fontSize = 14.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                listOfNotNull(video.channel.ifBlank { null }, video.views.takeIf { it >= 0 }?.let { viewsLine(it) }).joinDots(),
-                color = c.onSurfaceVariant,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Spacer(Modifier.height(5.dp))
+            Row(
+                modifier = Modifier.pressable(enabled = video.channelUrl != null) { video.channelUrl?.let(openChannel) },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ChannelAvatar(video.avatar, resolvedChannel, size = 18, usernameOrUrl = video.channelUrl)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    listOfNotNull(resolvedChannel.ifBlank { null }, video.views.takeIf { it >= 0 }?.let { viewsLine(it) }).joinDots(),
+                    color = c.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         trailing?.invoke()
     }
