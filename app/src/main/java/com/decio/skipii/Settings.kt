@@ -824,7 +824,7 @@ private fun DeveloperCard(player: PlayerState, modifier: Modifier = Modifier) {
         androidx.compose.foundation.Image(
             painter = androidx.compose.ui.res.painterResource(R.drawable.app_icon),
             contentDescription = null,
-            modifier = Modifier.size(44.dp),
+            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)),
         )
         Spacer(Modifier.height(8.dp))
         Text(

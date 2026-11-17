@@ -274,7 +274,7 @@ fun SignInScreen(onDone: () -> Unit, onCancel: () -> Unit) {
                     androidx.compose.foundation.Image(
                         painter = androidx.compose.ui.res.painterResource(R.drawable.app_icon),
                         contentDescription = null,
-                        modifier = Modifier.size(56.dp),
+                        modifier = Modifier.size(64.dp).clip(RoundedCornerShape(18.dp)),
                     )
                     Spacer(Modifier.height(10.dp))
                     Text(

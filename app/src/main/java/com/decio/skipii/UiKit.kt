@@ -149,8 +149,8 @@ fun BrandMark() {
     Image(
         painter = painterResource(R.drawable.app_icon),
         contentDescription = null,
-        contentScale = ContentScale.Fit,
-        modifier = Modifier.size(34.dp),
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)),
     )
 }
 
