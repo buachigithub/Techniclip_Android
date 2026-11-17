@@ -11,6 +11,7 @@ local.properties
 keystore.properties
 *.jks
 *.keystore
+*.pem
 
 # IDE / OS
 .idea/
