@@ -1,11 +1,23 @@
 package com.decio.skipii
 
+import android.app.Activity
 import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.credentials.CreatePublicKeyCredentialRequest
+import androidx.credentials.CreatePublicKeyCredentialResponse
+import androidx.credentials.CredentialManager
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.GetPublicKeyCredentialOption
+import androidx.credentials.PublicKeyCredential
+import androidx.credentials.exceptions.CreateCredentialCancellationException
+import androidx.credentials.exceptions.CreateCredentialException
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.NoCredentialException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
@@ -19,6 +31,16 @@ import java.net.URLEncoder
 
 @Immutable
 data class Profile(val name: String, val handle: String?, val avatar: String?)
+
+@Immutable
+data class PasskeyItem(val credentialId: String, val name: String, val createdAt: String)
+
+@Immutable
+data class UserAuthInfo(
+    val email: String?,
+    val hasPassword: Boolean,
+    val passkeys: List<PasskeyItem>,
+)
 
 @Immutable
 data class PlaylistRef(val id: String, val title: String, val thumbnail: String?, val subtitle: String?)
@@ -123,7 +145,7 @@ object Account {
         return "session" in names
     }
 
-    /** Direct username/password sign-in against `/api/auth/login`. */
+    /** Direct username/email + password sign-in against `/api/auth/login`. */
     suspend fun loginWithPassword(username: String, password: String) = withContext(Dispatchers.IO) {
         val form = FormBody.Builder()
             .add("username", username.trim())
@@ -137,11 +159,269 @@ object Account {
             absorbSetCookies(res.headers("Set-Cookie"))
             if (!res.isSuccessful) {
                 val msg = runCatching { JSONObject(res.body?.string().orEmpty()).optString("detail") }.getOrNull()
-                throw IOException(msg?.ifBlank { null } ?: "IDまたはパスワードが正しくありません")
+                throw IOException(msg?.ifBlank { null } ?: "ID/メールアドレス または パスワードが正しくありません")
             }
         }
         persistCookies()
         fetchAndStoreProfile()
+    }
+
+    private fun postAuthJson(path: String, payload: JSONObject): JSONObject {
+        val mediaType = "application/json; charset=utf-8".toMediaType()
+        val req = Request.Builder()
+            .url("$ORIGIN$path")
+            .post(payload.toString().toRequestBody(mediaType))
+            .build()
+        Net.client.newCall(req).execute().use { res ->
+            absorbSetCookies(res.headers("Set-Cookie"))
+            val bodyStr = res.body?.string().orEmpty()
+            val json = runCatching { JSONObject(bodyStr) }.getOrNull()
+            if (!res.isSuccessful) {
+                val detail = json?.optString("detail")?.ifBlank { null } ?: "リクエストに失敗しました (${res.code})"
+                throw IOException(detail)
+            }
+            return json ?: JSONObject()
+        }
+    }
+
+    /** Check whether a TekuZone ID is available for registration. */
+    suspend fun checkTekuzoneId(id: String): Boolean = withContext(Dispatchers.IO) {
+        val encoded = URLEncoder.encode(id.trim(), "UTF-8")
+        val req = Request.Builder().url("$ORIGIN/api/auth/check-id?id=$encoded").get().build()
+        Net.client.newCall(req).execute().use { res ->
+            if (!res.isSuccessful) return@withContext false
+            JSONObject(res.body?.string().orEmpty()).optBoolean("available", false)
+        }
+    }
+
+    /** Send a 6-digit verification code to email (`register`, `login`, `link_email`, `reset_password`). */
+    suspend fun sendEmailCode(email: String, purpose: String) = withContext(Dispatchers.IO) {
+        postAuthJson(
+            "/api/auth/email/send-code",
+            JSONObject().put("email", email.trim()).put("purpose", purpose),
+        )
+        Unit
+    }
+
+    /** Passwordless sign-in using an email address and 6-digit verification code. */
+    suspend fun loginWithEmailCode(email: String, code: String) = withContext(Dispatchers.IO) {
+        postAuthJson(
+            "/api/auth/email/login-code",
+            JSONObject().put("email", email.trim()).put("code", code.trim()),
+        )
+        persistCookies()
+        fetchAndStoreProfile()
+    }
+
+    /** Reset password using a verified 6-digit email code and sign in immediately. */
+    suspend fun resetPasswordWithEmail(email: String, code: String, newPassword: String) = withContext(Dispatchers.IO) {
+        postAuthJson(
+            "/api/auth/email/reset-password",
+            JSONObject()
+                .put("email", email.trim())
+                .put("code", code.trim())
+                .put("new_password", newPassword),
+        )
+        persistCookies()
+        fetchAndStoreProfile()
+    }
+
+    /** Register a new account with verified email + password. */
+    suspend fun registerWithEmail(
+        email: String,
+        code: String,
+        tekuzoneId: String,
+        displayName: String?,
+        password: String,
+    ) = withContext(Dispatchers.IO) {
+        val payload = JSONObject()
+            .put("email", email.trim())
+            .put("code", code.trim())
+            .put("tekuzone_id", tekuzoneId.trim())
+            .put("password", password)
+            .put("platform", "android")
+        if (!displayName.isNullOrBlank()) payload.put("display_name", displayName.trim())
+        postAuthJson("/api/auth/email/register", payload)
+        persistCookies()
+        fetchAndStoreProfile()
+    }
+
+    /** Register a local ID + password account directly. */
+    suspend fun registerLocal(tekuzoneId: String, displayName: String?, password: String) = withContext(Dispatchers.IO) {
+        val payload = JSONObject()
+            .put("tekuzone_id", tekuzoneId.trim())
+            .put("password", password)
+            .put("provider", "local")
+        if (!displayName.isNullOrBlank()) payload.put("display_name", displayName.trim())
+        postAuthJson("/api/auth/register", payload)
+        persistCookies()
+        fetchAndStoreProfile()
+    }
+
+    /** Sign in using an Android Passkey (`CredentialManager`). */
+    suspend fun loginWithPasskey(activity: Activity, usernameHint: String? = null) {
+        val optRes = withContext(Dispatchers.IO) {
+            val reqJson = JSONObject().put("platform", "android")
+            if (!usernameHint.isNullOrBlank()) reqJson.put("username", usernameHint.trim())
+            postAuthJson("/api/auth/passkey/login/options?platform=android", reqJson)
+        }
+        val challengeId = optRes.getString("challenge_id")
+        val publicKeyJson = optRes.getJSONObject("publicKey").toString()
+
+        val authResponseJson = try {
+            withContext(Dispatchers.Main) {
+                val cm = CredentialManager.create(activity)
+                val option = GetPublicKeyCredentialOption(requestJson = publicKeyJson)
+                val result = cm.getCredential(activity, GetCredentialRequest(listOf(option)))
+                val cred = result.credential as? PublicKeyCredential
+                    ?: throw IOException("パスキーの取得結果が不正です")
+                cred.authenticationResponseJson
+            }
+        } catch (_: GetCredentialCancellationException) {
+            throw IOException("パスキー認証がキャンセルされました")
+        } catch (_: NoCredentialException) {
+            throw IOException("この端末に保存されたてくぞねのパスキーが見つかりません")
+        } catch (e: GetCredentialException) {
+            throw IOException("パスキー認証エラー: ${e.errorMessage ?: e.message}")
+        }
+
+        withContext(Dispatchers.IO) {
+            val verifyBody = JSONObject()
+                .put("challenge_id", challengeId)
+                .put("credential", JSONObject(authResponseJson))
+                .put("platform", "android")
+            postAuthJson("/api/auth/passkey/login/verify", verifyBody)
+            persistCookies()
+            fetchAndStoreProfile()
+        }
+    }
+
+    /** Register a new account with an Android Passkey (optionally linking a verified email at the same time). */
+    suspend fun registerWithPasskey(
+        activity: Activity,
+        tekuzoneId: String,
+        displayName: String?,
+        email: String? = null,
+        emailCode: String? = null,
+    ) {
+        val optRes = withContext(Dispatchers.IO) {
+            val reqJson = JSONObject()
+                .put("tekuzone_id", tekuzoneId.trim())
+                .put("platform", "android")
+            if (!displayName.isNullOrBlank()) reqJson.put("display_name", displayName.trim())
+            if (!email.isNullOrBlank()) {
+                reqJson.put("email", email.trim())
+                reqJson.put("email_code", emailCode.orEmpty().trim())
+            }
+            postAuthJson("/api/auth/passkey/register/options?platform=android", reqJson)
+        }
+        val challengeId = optRes.getString("challenge_id")
+        val publicKeyJson = optRes.getJSONObject("publicKey").toString()
+
+        val regResponseJson = try {
+            withContext(Dispatchers.Main) {
+                val cm = CredentialManager.create(activity)
+                val req = CreatePublicKeyCredentialRequest(requestJson = publicKeyJson)
+                val res = cm.createCredential(activity, req) as? CreatePublicKeyCredentialResponse
+                    ?: throw IOException("パスキーの作成結果が不正です")
+                res.registrationResponseJson
+            }
+        } catch (_: CreateCredentialCancellationException) {
+            throw IOException("パスキーの作成がキャンセルされました")
+        } catch (e: CreateCredentialException) {
+            throw IOException("パスキー作成エラー: ${e.errorMessage ?: e.message}")
+        }
+
+        withContext(Dispatchers.IO) {
+            val verifyBody = JSONObject()
+                .put("challenge_id", challengeId)
+                .put("credential", JSONObject(regResponseJson))
+                .put("device_name", android.os.Build.MODEL?.let { "Android ($it)" } ?: "Android パスキー")
+                .put("platform", "android")
+            postAuthJson("/api/auth/passkey/register/verify", verifyBody)
+            persistCookies()
+            fetchAndStoreProfile()
+        }
+    }
+
+    /** Fetch current logged-in user's verified email & passkey list. */
+    suspend fun fetchAuthInfo(): UserAuthInfo = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url("$ORIGIN/api/user/auth-info").get().build()
+        Net.client.newCall(req).execute().use { res ->
+            if (!res.isSuccessful) throw IOException("認証情報の取得に失敗しました")
+            val o = JSONObject(res.body?.string().orEmpty())
+            val email = o.optString("email").takeIf { it.isNotBlank() && it != "null" }
+            val hasPw = o.optBoolean("has_password", false)
+            val arr = o.optJSONArray("passkeys") ?: JSONArray()
+            val pks = buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    add(
+                        PasskeyItem(
+                            credentialId = item.optString("credential_id"),
+                            name = item.optString("name", "パスキー"),
+                            createdAt = item.optString("created_at").take(10),
+                        )
+                    )
+                }
+            }
+            UserAuthInfo(email = email, hasPassword = hasPw, passkeys = pks)
+        }
+    }
+
+    /** Verify and link an email address to the currently signed-in account. */
+    suspend fun verifyAndLinkEmail(email: String, code: String): String = withContext(Dispatchers.IO) {
+        val res = postAuthJson(
+            "/api/user/settings/email/verify",
+            JSONObject().put("email", email.trim()).put("code", code.trim()),
+        )
+        res.optString("email", email.trim())
+    }
+
+    /** Register an additional Passkey on the currently signed-in account. */
+    suspend fun addPasskeyToAccount(activity: Activity, customName: String? = null) {
+        val label = customName?.takeIf { it.isNotBlank() }
+            ?: android.os.Build.MODEL?.let { "Android ($it)" }
+            ?: "Android パスキー"
+        val optRes = withContext(Dispatchers.IO) {
+            postAuthJson(
+                "/api/user/passkeys/add/options?platform=android",
+                JSONObject().put("name", label).put("platform", "android"),
+            )
+        }
+        val challengeId = optRes.getString("challenge_id")
+        val publicKeyJson = optRes.getJSONObject("publicKey").toString()
+
+        val regResponseJson = try {
+            withContext(Dispatchers.Main) {
+                val cm = CredentialManager.create(activity)
+                val req = CreatePublicKeyCredentialRequest(requestJson = publicKeyJson)
+                val res = cm.createCredential(activity, req) as? CreatePublicKeyCredentialResponse
+                    ?: throw IOException("パスキーの作成結果が不正です")
+                res.registrationResponseJson
+            }
+        } catch (_: CreateCredentialCancellationException) {
+            throw IOException("パスキーの追加がキャンセルされました")
+        } catch (e: CreateCredentialException) {
+            throw IOException("パスキー作成エラー: ${e.errorMessage ?: e.message}")
+        }
+
+        withContext(Dispatchers.IO) {
+            postAuthJson(
+                "/api/user/passkeys/add/verify",
+                JSONObject()
+                    .put("challenge_id", challengeId)
+                    .put("credential", JSONObject(regResponseJson))
+                    .put("name", label)
+                    .put("platform", "android"),
+            )
+        }
+    }
+
+    /** Delete a registered Passkey from the currently signed-in account. */
+    suspend fun deletePasskey(credentialId: String) = withContext(Dispatchers.IO) {
+        postAuthJson("/api/user/passkeys/delete", JSONObject().put("credential_id", credentialId))
+        Unit
     }
 
     /** Takes over the WebView session: stores the cookies, then loads `/api/user/me`. */

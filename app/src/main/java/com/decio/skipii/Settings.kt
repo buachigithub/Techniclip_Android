@@ -95,6 +95,10 @@ import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.ZoomOutMap
 import androidx.compose.material.icons.rounded.BrightnessMedium
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Fingerprint
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
@@ -1693,12 +1697,13 @@ private fun NotificationsPage(player: PlayerState) {
 @Composable
 private fun AccountPage(onSignIn: () -> Unit, onSignedOut: () -> Unit) {
     val c = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val profile = Account.profile
     Spacer(Modifier.height(14.dp))
     if (profile == null) {
         Joined(1) { _, shape ->
             SettingBox("account", shape, padding = 20.dp) {
-                // The pitch's title is already the page's line, right above.
                 Text(stringResource(R.string.ui_account_pitch_body), color = c.onSurfaceVariant, fontSize = 14.sp, lineHeight = 20.sp)
                 Spacer(Modifier.height(18.dp))
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1708,9 +1713,50 @@ private fun AccountPage(onSignIn: () -> Unit, onSignedOut: () -> Unit) {
         }
         return
     }
-    Joined(2) { i, shape ->
-        if (i == 0) {
-            SettingBox("account", shape, padding = 20.dp) {
+
+    var authInfo by remember { mutableStateOf<UserAuthInfo?>(null) }
+    var emailInput by remember { mutableStateOf("") }
+    var emailCodeInput by remember { mutableStateOf("") }
+    var statusMsg by remember { mutableStateOf<String?>(null) }
+    var isErrorMsg by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+
+    fun reloadAuthInfo() {
+        scope.launch {
+            runCatching { Account.fetchAuthInfo() }.onSuccess { info ->
+                authInfo = info
+                if (emailInput.isBlank() && !info.email.isNullOrBlank()) {
+                    emailInput = info.email
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(profile) {
+        reloadAuthInfo()
+    }
+
+    if (statusMsg != null) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(if (isErrorMsg) c.errorContainer else c.primaryContainer)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            Text(
+                statusMsg.orEmpty(),
+                color = if (isErrorMsg) c.onErrorContainer else c.onPrimaryContainer,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+
+    Joined(4) { i, shape ->
+        when (i) {
+            0 -> SettingBox("account", shape, padding = 20.dp) {
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                     ChannelAvatar(profile.avatar, profile.name, size = 72)
                     Spacer(Modifier.height(12.dp))
@@ -1720,8 +1766,220 @@ private fun AccountPage(onSignIn: () -> Unit, onSignedOut: () -> Unit) {
                     PillButton(stringResource(R.string.ui_sign_out), { Account.signOut(); onSignedOut() }, Icons.AutoMirrored.Rounded.Logout)
                 }
             }
-        } else {
-            SettingBox("sync", shape) {
+
+            1 -> SettingBox("email_auth", shape, padding = 18.dp) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.MailOutline, null, tint = c.primary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text("メールアドレス連携・認証", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = c.onSurface)
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    authInfo?.email?.let { "現在の認証済みメール: $it" }
+                        ?: "メールアドレスを認証すると、認証コードでのログインやパスワード再設定が利用できます。",
+                    color = c.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(c.surfaceContainerHighest)
+                            .padding(horizontal = 14.dp),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        if (emailInput.isEmpty()) {
+                            Text("you@example.com", color = c.onSurfaceVariant, fontSize = 14.sp)
+                        }
+                        BasicTextField(
+                            value = emailInput,
+                            onValueChange = { emailInput = it; statusMsg = null },
+                            singleLine = true,
+                            textStyle = TextStyle(color = c.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                            cursorBrush = SolidColor(c.primary),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        Modifier
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(c.secondaryContainer)
+                            .pressable(enabled = !busy && emailInput.isNotBlank()) {
+                                busy = true
+                                statusMsg = null
+                                scope.launch {
+                                    runCatching { Account.sendEmailCode(emailInput, "link_email") }
+                                        .onSuccess {
+                                            busy = false
+                                            isErrorMsg = false
+                                            statusMsg = "認証コードを送信しました！"
+                                        }
+                                        .onFailure {
+                                            busy = false
+                                            isErrorMsg = true
+                                            statusMsg = it.message ?: "送信に失敗しました"
+                                        }
+                                }
+                            }
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("コード送信", color = c.onSecondaryContainer, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(c.surfaceContainerHighest)
+                            .padding(horizontal = 14.dp),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        if (emailCodeInput.isEmpty()) {
+                            Text("6桁の認証コード", color = c.onSurfaceVariant, fontSize = 14.sp)
+                        }
+                        BasicTextField(
+                            value = emailCodeInput,
+                            onValueChange = { emailCodeInput = it.filter(Char::isDigit).take(6); statusMsg = null },
+                            singleLine = true,
+                            textStyle = TextStyle(color = c.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                            cursorBrush = SolidColor(c.primary),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        Modifier
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(c.primary)
+                            .pressable(enabled = !busy && emailInput.isNotBlank() && emailCodeInput.length >= 4) {
+                                busy = true
+                                statusMsg = null
+                                scope.launch {
+                                    runCatching { Account.verifyAndLinkEmail(emailInput, emailCodeInput) }
+                                        .onSuccess { savedEmail ->
+                                            busy = false
+                                            emailCodeInput = ""
+                                            isErrorMsg = false
+                                            statusMsg = "メールアドレス ($savedEmail) を保存しました！"
+                                            reloadAuthInfo()
+                                        }
+                                        .onFailure {
+                                            busy = false
+                                            isErrorMsg = true
+                                            statusMsg = it.message ?: "認証に失敗しました"
+                                        }
+                                }
+                            }
+                            .padding(horizontal = 14.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("認証・保存", color = c.onPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            2 -> SettingBox("passkeys", shape, padding = 18.dp) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.Fingerprint, null, tint = c.primary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text("パスキー（指紋・顔認証）", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = c.onSurface)
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "パスキーを登録すると、次回から生体認証や画面ロックだけでログインできます。",
+                    color = c.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                val pks = authInfo?.passkeys.orEmpty()
+                pks.forEach { pk ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(c.surfaceContainerHighest)
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(pk.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = c.onSurface)
+                            if (pk.createdAt.isNotEmpty()) {
+                                Text("登録日: ${pk.createdAt}", fontSize = 11.sp, color = c.onSurfaceVariant)
+                            }
+                        }
+                        Box(
+                            Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .pressable(enabled = !busy) {
+                                    busy = true
+                                    scope.launch {
+                                        runCatching { Account.deletePasskey(pk.credentialId) }
+                                            .onSuccess {
+                                                busy = false
+                                                isErrorMsg = false
+                                                statusMsg = "パスキーを削除しました"
+                                                reloadAuthInfo()
+                                            }
+                                            .onFailure {
+                                                busy = false
+                                                isErrorMsg = true
+                                                statusMsg = it.message ?: "削除できませんでした"
+                                            }
+                                    }
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Rounded.DeleteOutline, contentDescription = "削除", tint = c.error, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    PillButton(
+                        "この端末のパスキーを追加",
+                        {
+                            val act = context.findActivity()
+                            if (act != null && !busy) {
+                                busy = true
+                                statusMsg = null
+                                scope.launch {
+                                    runCatching { Account.addPasskeyToAccount(act) }
+                                        .onSuccess {
+                                            busy = false
+                                            isErrorMsg = false
+                                            statusMsg = "パスキーを追加しました！"
+                                            reloadAuthInfo()
+                                        }
+                                        .onFailure {
+                                            busy = false
+                                            isErrorMsg = true
+                                            statusMsg = it.message ?: "パスキーの追加に失敗しました"
+                                        }
+                                }
+                            }
+                        },
+                        Icons.Rounded.Add,
+                    )
+                }
+            }
+
+            else -> SettingBox("sync", shape) {
                 Row(verticalAlignment = Alignment.Top) {
                     Icon(Icons.Rounded.Sync, null, tint = c.primary, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(12.dp))

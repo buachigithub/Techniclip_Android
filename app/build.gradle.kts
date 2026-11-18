@@ -21,8 +21,8 @@ android {
         applicationId = "com.techniclip.zone.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1000
-        versionName = "1.0.0"
+        versionCode = 1001
+        versionName = "1.0.1"
     }
 
     signingConfigs {
@@ -79,6 +79,8 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.10.1")
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.compose.ui:ui")
