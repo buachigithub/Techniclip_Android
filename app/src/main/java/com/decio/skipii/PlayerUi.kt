@@ -3,7 +3,12 @@ package com.decio.skipii
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.Orientation
@@ -48,8 +53,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ThumbDown
 import androidx.compose.material.icons.outlined.ThumbUp
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Campaign
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.MusicNote
@@ -302,7 +310,7 @@ fun PlayerScreen(
                             )
                         }
                         if (details != null) {
-                            VideoMetadataChips(details)
+                            VideoMetadataChips(details, state)
                         }
                         Spacer(Modifier.height(16.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -965,16 +973,19 @@ private fun Modifier.bleed(x: androidx.compose.ui.unit.Dp) = layout { measurable
 }
 
 /** Clickable chips for 原曲 (`sources`), 素材 (`characters`), and タグ (`tags`) that jump to Search. */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun VideoMetadataChips(details: VideoDetails) {
+private fun VideoMetadataChips(details: VideoDetails, state: PlayerState) {
     val sources = details.sources
     val characters = details.characters
     val tags = details.tags
-    if (sources.isEmpty() && characters.isEmpty() && tags.isEmpty()) return
+    if (sources.isEmpty() && characters.isEmpty() && tags.isEmpty() && !Account.signedIn) return
     LaunchedEffect(characters) {
         if (characters.isNotEmpty()) CharacterImages.ensureLoaded()
     }
+    var editingTags by remember(details.item.id) { mutableStateOf(false) }
+    var addDialogOpen by remember(details.item.id) { mutableStateOf(false) }
+    var newTagText by remember(details.item.id) { mutableStateOf("") }
     val searchTag = LocalTagSearch.current
     val c = MaterialTheme.colorScheme
     FlowRow(
@@ -1004,20 +1015,153 @@ private fun VideoMetadataChips(details: VideoDetails) {
                 label = "#$tag",
                 bg = c.surfaceContainerHigh,
                 fg = c.primary,
-                onClick = { searchTag("タグ:$tag") },
+                editing = editingTags,
+                onRemove = { state.removeTag(tag) },
+                onClick = {
+                    if (editingTags) state.removeTag(tag) else searchTag("タグ:$tag")
+                },
             )
+        }
+        AnimatedVisibility(
+            visible = editingTags,
+            enter = expandHorizontally(spring(dampingRatio = 0.7f, stiffness = 500f)) + fadeIn(tween(180)),
+            exit = shrinkHorizontally(spring(dampingRatio = 0.8f, stiffness = 500f)) + fadeOut(tween(150)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .heightIn(min = 32.dp)
+                    .pressable(pressedScale = 0.94f) {
+                        newTagText = ""
+                        addDialogOpen = true
+                    }
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(c.primaryContainer)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Rounded.Add,
+                        contentDescription = "タグを追加",
+                        tint = c.onPrimaryContainer,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        "追加",
+                        color = c.onPrimaryContainer,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .pressable(pressedScale = 0.92f) {
+                    if (!Account.signedIn) {
+                        state.actionMessage = "タグを編集するにはログインが必要です"
+                    } else {
+                        editingTags = !editingTags
+                    }
+                }
+                .clip(RoundedCornerShape(14.dp))
+                .background(if (editingTags) c.primary else c.surfaceContainerHigh),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (editingTags) Icons.Rounded.Check else Icons.Rounded.Edit,
+                contentDescription = if (editingTags) "タグ編集を完了" else "タグを編集",
+                tint = if (editingTags) c.onPrimary else c.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+
+    if (addDialogOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { addDialogOpen = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = c.surfaceContainerLow,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
+                Text(
+                    "タグを追加",
+                    fontFamily = RoundedHeavy,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 20.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(c.surfaceContainerHigh)
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    if (newTagText.isEmpty()) {
+                        Text("新しいタグ名を入力", color = c.onSurfaceVariant, fontSize = 15.sp)
+                    }
+                    BasicTextField(
+                        value = newTagText,
+                        onValueChange = { newTagText = it },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            color = c.onSurface,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(c.primary),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+                val canAdd = newTagText.trim().isNotEmpty()
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .clip(RoundedCornerShape(25.dp))
+                        .background(if (canAdd) c.primary else c.surfaceContainerHighest)
+                        .pressable(enabled = canAdd) {
+                            val tagToAdd = newTagText.trim()
+                            addDialogOpen = false
+                            state.addTag(tagToAdd)
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "追加する",
+                        color = if (canAdd) c.onPrimary else c.onSurfaceVariant,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun MetaSearchChip(label: String, bg: Color, fg: Color, bgImage: String? = null, onClick: () -> Unit) {
+private fun MetaSearchChip(
+    label: String,
+    bg: Color,
+    fg: Color,
+    bgImage: String? = null,
+    editing: Boolean = false,
+    onRemove: (() -> Unit)? = null,
+    onClick: () -> Unit,
+) {
     Box(
         modifier = Modifier
             .heightIn(min = 32.dp)
             .pressable(pressedScale = 0.96f, onClick = onClick)
             .clip(RoundedCornerShape(14.dp))
-            .background(bg),
+            .background(bg)
+            .animateContentSize(spring(dampingRatio = 0.7f, stiffness = 500f)),
         contentAlignment = Alignment.Center,
     ) {
         if (bgImage != null) {
@@ -1033,37 +1177,68 @@ private fun MetaSearchChip(label: String, bg: Color, fg: Color, bgImage: String?
                     .graphicsLayer { alpha = 0.42f },
             )
         }
-        Text(
-            text = label,
-            color = fg,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(
                 start = 12.dp,
-                end = if (bgImage != null) 18.dp else 12.dp,
+                end = when {
+                    editing && onRemove != null -> 8.dp
+                    bgImage != null -> 18.dp
+                    else -> 12.dp
+                },
                 top = 6.dp,
                 bottom = 6.dp,
             ),
-        )
+        ) {
+            Text(
+                text = label,
+                color = fg,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            AnimatedVisibility(
+                visible = editing && onRemove != null,
+                enter = expandHorizontally(spring(dampingRatio = 0.7f, stiffness = 500f)) + fadeIn(tween(180)),
+                exit = shrinkHorizontally(spring(dampingRatio = 0.8f, stiffness = 500f)) + fadeOut(tween(150)),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.width(5.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clip(CircleShape)
+                            .background(fg.copy(alpha = 0.16f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Rounded.Close,
+                            contentDescription = "削除",
+                            tint = fg,
+                            modifier = Modifier.size(12.dp),
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
-/** TechniClip Zone 3軸評価 (音声・映像・発想) + 再生リスト保存. */
+/** Techniclip Zone 3軸評価 (音声・映像・発想) + 再生リスト保存. */
 @Composable
 private fun AccountActions(state: PlayerState) {
     val ratings = state.details?.ratings ?: VideoRatings()
     val rated = state.details?.ratedCategories ?: RatedCategories()
 
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         ActionPill(
             icon = Icons.Rounded.MusicNote,
             label = "${ratings.audio}",
             active = rated.audio,
             flourish = Flourish.Pop,
             labelRollsUp = true,
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(topStart = 22.dp, bottomStart = 22.dp, topEnd = 7.dp, bottomEnd = 7.dp),
             description = "音声を評価",
         ) { state.toggleRate("audio") }
 
@@ -1073,7 +1248,7 @@ private fun AccountActions(state: PlayerState) {
             active = rated.visual,
             flourish = Flourish.Pop,
             labelRollsUp = true,
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(7.dp),
             description = "映像を評価",
         ) { state.toggleRate("visual") }
 
@@ -1083,7 +1258,7 @@ private fun AccountActions(state: PlayerState) {
             active = rated.idea,
             flourish = Flourish.Pop,
             labelRollsUp = true,
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(topStart = 7.dp, bottomStart = 7.dp, topEnd = 22.dp, bottomEnd = 22.dp),
             description = "発想を評価",
         ) { state.toggleRate("idea") }
     }

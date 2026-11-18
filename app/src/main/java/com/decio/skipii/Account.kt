@@ -966,6 +966,49 @@ object InnerTube {
         }
     }
 
+    suspend fun addTag(videoId: String, tag: String): String = withContext(Dispatchers.IO) {
+        if (!Account.signedIn) throw NotSignedInException()
+        val form = FormBody.Builder()
+            .add("tag", tag.trim())
+            .build()
+        val req = Request.Builder()
+            .url("${TekuZone.BASE_URL}/api/video/$videoId/tags/add")
+            .post(form)
+            .build()
+        Net.client.newCall(req).execute().use { r ->
+            val bodyStr = r.body?.string().orEmpty()
+            val json = runCatching { JSONObject(bodyStr) }.getOrNull()
+            if (!r.isSuccessful) {
+                val msg = json?.optString("message")?.ifBlank { null }
+                    ?: json?.optString("detail")?.ifBlank { null }
+                    ?: "タグの追加に失敗しました"
+                throw IOException(msg)
+            }
+            json?.optString("tag")?.ifBlank { null } ?: tag.trim()
+        }
+    }
+
+    suspend fun removeTag(videoId: String, tag: String) = withContext(Dispatchers.IO) {
+        if (!Account.signedIn) throw NotSignedInException()
+        val form = FormBody.Builder()
+            .add("tag", tag)
+            .build()
+        val req = Request.Builder()
+            .url("${TekuZone.BASE_URL}/api/video/$videoId/tags/remove")
+            .post(form)
+            .build()
+        Net.client.newCall(req).execute().use { r ->
+            val bodyStr = r.body?.string().orEmpty()
+            val json = runCatching { JSONObject(bodyStr) }.getOrNull()
+            if (!r.isSuccessful) {
+                val msg = json?.optString("detail")?.ifBlank { null }
+                    ?: json?.optString("message")?.ifBlank { null }
+                    ?: "タグの削除に失敗しました"
+                throw IOException(msg)
+            }
+        }
+    }
+
     suspend fun setBell(@Suppress("UNUSED_PARAMETER") channelId: String, @Suppress("UNUSED_PARAMETER") all: Boolean) = Unit
 
     suspend fun advertPoints(): Int = withContext(Dispatchers.IO) {

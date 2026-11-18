@@ -448,6 +448,58 @@ class PlayerState(private val scope: CoroutineScope) {
         }
     }
 
+    fun addTag(rawTag: String) {
+        val id = current?.id ?: return
+        val d = details ?: return
+        val tag = rawTag.trim()
+        if (tag.isEmpty()) return
+        if (!Account.signedIn) {
+            actionMessage = "タグを編集するにはログインが必要です"
+            return
+        }
+        if (tag in d.tags) {
+            actionMessage = "このタグは既に追加されています"
+            return
+        }
+        details = d.copy(tags = d.tags + tag)
+        scope.launch {
+            runCatching { InnerTube.addTag(id, tag) }
+                .onSuccess {
+                    if (current?.id == id) actionMessage = "タグ「#$tag」を追加しました"
+                }
+                .onFailure { err ->
+                    if (current?.id == id) {
+                        details = details?.let { cur -> cur.copy(tags = cur.tags.filterNot { it == tag }) }
+                        actionMessage = err.message ?: "タグの追加に失敗しました"
+                    }
+                }
+        }
+    }
+
+    fun removeTag(tag: String) {
+        val id = current?.id ?: return
+        val d = details ?: return
+        if (!Account.signedIn) {
+            actionMessage = "タグを編集するにはログインが必要です"
+            return
+        }
+        if (tag !in d.tags) return
+        val previous = d.tags
+        details = d.copy(tags = d.tags.filterNot { it == tag })
+        scope.launch {
+            runCatching { InnerTube.removeTag(id, tag) }
+                .onSuccess {
+                    if (current?.id == id) actionMessage = "タグ「#$tag」を削除しました"
+                }
+                .onFailure { err ->
+                    if (current?.id == id) {
+                        details = details?.let { cur -> cur.copy(tags = previous) }
+                        actionMessage = err.message ?: "タグの削除に失敗しました"
+                    }
+                }
+        }
+    }
+
     fun toggleSubscribe() {
         val channelId = accountState?.channelId
             ?: TekuZone.usernameFromUrl(details?.item?.channelUrl ?: current?.channelUrl)

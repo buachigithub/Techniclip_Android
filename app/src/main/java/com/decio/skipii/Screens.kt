@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Refresh
@@ -582,6 +583,50 @@ fun LibraryScreen(
                     )
                 }
                 return@LazyColumn
+            }
+            val profile = Account.profile
+            val handle = profile?.handle?.removePrefix("@")?.takeIf { it.isNotBlank() }
+            if (profile != null && handle != null) {
+                item(key = "myChannel") {
+                    val openChannel = LocalChannelOpener.current
+                    val c = MaterialTheme.colorScheme
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(c.surfaceContainerHigh)
+                            .pressable(pressedScale = 0.98f) {
+                                openChannel("${TekuZone.BASE_URL}/user/$handle")
+                            }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ChannelAvatar(profile.avatar, profile.name, size = 46)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                profile.name,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                "自分のチャンネルを開く（@$handle）",
+                                color = c.onSurfaceVariant,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        Icon(
+                            Icons.Rounded.ChevronRight,
+                            contentDescription = "自分のチャンネルへ",
+                            tint = c.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
             }
             item(key = "historyTitle") { SectionTitle(stringResource(R.string.ui_history)) }
             item(key = "history") {
