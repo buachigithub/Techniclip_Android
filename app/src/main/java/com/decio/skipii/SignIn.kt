@@ -450,24 +450,6 @@ fun SignInScreen(onDone: () -> Unit, onCancel: () -> Unit) {
                     }
 
                     if (mainTab == AuthMainTab.Login) {
-                        // ── Passkey Login Button ──
-                        PasskeyActionCard(
-                            text = "パスキーでログイン",
-                            enabled = !loading,
-                            onClick = {
-                                val act = context.findSignInActivity()
-                                if (act == null) {
-                                    error = "アクティビティを取得できませんでした"
-                                } else {
-                                    runAuthAction {
-                                        Account.loginWithPasskey(act, loginIdent.takeIf { it.isNotBlank() })
-                                    }
-                                }
-                            },
-                        )
-
-                        Spacer(Modifier.height(14.dp))
-
                         // Login Sub-mode Switcher
                         Row(
                             Modifier
@@ -816,7 +798,24 @@ fun SignInScreen(onDone: () -> Unit, onCancel: () -> Unit) {
 
                     Spacer(Modifier.height(16.dp))
 
-                    // SSO Buttons
+                    // SSO & Passkey Buttons
+                    SsoButton(
+                        text = "パスキーでログイン",
+                        containerColor = c.surfaceContainerHigh,
+                        contentColor = c.onSurface,
+                        icon = Icons.Rounded.Fingerprint,
+                        onClick = {
+                            val act = context.findSignInActivity()
+                            if (act == null) {
+                                error = "アクティビティを取得できませんでした"
+                            } else {
+                                runAuthAction {
+                                    Account.loginWithPasskey(act, loginIdent.takeIf { it.isNotBlank() })
+                                }
+                            }
+                        },
+                    )
+                    Spacer(Modifier.height(10.dp))
                     SsoButton(
                         text = "Techniclip.com でログイン",
                         containerColor = c.surfaceContainerHigh,
@@ -1134,9 +1133,10 @@ private fun SsoButton(
     text: String,
     containerColor: Color,
     contentColor: Color,
+    icon: ImageVector? = null,
     onClick: () -> Unit,
 ) {
-    Box(
+    Row(
         Modifier
             .fillMaxWidth()
             .height(52.dp)
@@ -1144,8 +1144,13 @@ private fun SsoButton(
             .background(containerColor)
             .pressable(onClick = onClick)
             .padding(horizontal = 20.dp),
-        contentAlignment = Alignment.Center,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
     ) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = contentColor, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+        }
         Text(
             text = text,
             color = contentColor,
