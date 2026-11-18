@@ -120,9 +120,11 @@ fun SignInScreen(onDone: () -> Unit, onCancel: () -> Unit) {
     var resetCode by remember { mutableStateOf("") }
     var resetNewPassword by remember { mutableStateOf("") }
 
-    // Register states
+    // Register states (3-step flow)
+    var regStep by remember { mutableIntStateOf(1) }
     var regEmail by remember { mutableStateOf("") }
     var regEmailCode by remember { mutableStateOf("") }
+    var regVerificationToken by remember { mutableStateOf<String?>(null) }
     var regTekuzoneId by remember { mutableStateOf("") }
     var regDisplayName by remember { mutableStateOf("") }
     var regPassword by remember { mutableStateOf("") }
@@ -602,178 +604,322 @@ fun SignInScreen(onDone: () -> Unit, onCancel: () -> Unit) {
                             }
                         }
                     } else {
-                        // ── REGISTER TAB ──
+                        // ── REGISTER TAB (3-Step Flow) ──
                         Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(c.surfaceContainer)
-                                .padding(3.dp),
+                            Modifier.fillMaxWidth().padding(bottom = 14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            SmallModeChip(
-                                text = "メール認証",
-                                selected = regMode == RegisterSubMode.Email,
-                                modifier = Modifier.weight(1f),
-                                onClick = { regMode = RegisterSubMode.Email; clearFeedback() },
-                            )
-                            SmallModeChip(
-                                text = "パスキー",
-                                selected = regMode == RegisterSubMode.Passkey,
-                                modifier = Modifier.weight(1f),
-                                onClick = { regMode = RegisterSubMode.Passkey; clearFeedback() },
-                            )
-                            SmallModeChip(
-                                text = "IDのみ",
-                                selected = regMode == RegisterSubMode.Local,
-                                modifier = Modifier.weight(1f),
-                                onClick = { regMode = RegisterSubMode.Local; clearFeedback() },
-                            )
+                            listOf(1, 2, 3).forEach { stepNum ->
+                                val barColor = when {
+                                    stepNum < regStep -> c.primary
+                                    stepNum == regStep -> c.primary.copy(alpha = 0.7f)
+                                    else -> c.surfaceContainerHighest
+                                }
+                                Box(
+                                    Modifier
+                                        .weight(1f)
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(barColor),
+                                )
+                            }
                         }
 
-                        Spacer(Modifier.height(14.dp))
-
-                        if (regMode == RegisterSubMode.Email) {
-                            EmailWithCodeButtonRow(
-                                email = regEmail,
-                                onEmailChange = { regEmail = it; error = null },
-                                placeholder = "メールアドレス",
-                                cooldownSec = codeCooldownSec,
-                                sending = sendingCode,
-                                onSendCode = { requestEmailCode(regEmail, "register") },
-                            )
-                            Spacer(Modifier.height(10.dp))
-                            AuthField(
-                                value = regEmailCode,
-                                onValueChange = { regEmailCode = it.filter(Char::isDigit).take(6); error = null },
-                                placeholder = "メールに届いた6桁の認証コード",
-                                icon = Icons.Rounded.Pin,
-                                keyboardType = KeyboardType.NumberPassword,
-                                imeAction = ImeAction.Next,
-                            )
-                            Spacer(Modifier.height(10.dp))
-                        }
-
-                        AuthField(
-                            value = regTekuzoneId,
-                            onValueChange = { regTekuzoneId = it; error = null },
-                            placeholder = "てくぞねID（半角英数字・例: my_id）",
-                            icon = Icons.Rounded.Person,
-                            keyboardType = KeyboardType.Ascii,
-                            imeAction = ImeAction.Next,
-                        )
-
-                        idAvailabilityHint?.let { (available, msg) ->
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                msg,
-                                color = if (available) Color(0xFF2E7D32) else c.error,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
-                            )
-                        }
-
-                        Spacer(Modifier.height(10.dp))
-
-                        AuthField(
-                            value = regDisplayName,
-                            onValueChange = { regDisplayName = it; error = null },
-                            placeholder = "表示名・ニックネーム（任意・日本語OK）",
-                            icon = Icons.Rounded.Badge,
-                            keyboardType = KeyboardType.Text,
-                            imeAction = if (regMode == RegisterSubMode.Passkey) ImeAction.Done else ImeAction.Next,
-                        )
-
-                        if (regMode != RegisterSubMode.Passkey) {
-                            Spacer(Modifier.height(10.dp))
-                            AuthPasswordField(
-                                value = regPassword,
-                                onValueChange = { regPassword = it; error = null },
-                                placeholder = "パスワード（6文字以上）",
-                                visible = showRegPassword,
-                                onToggleVisible = { showRegPassword = !showRegPassword },
-                            )
-                        }
-
-                        Spacer(Modifier.height(16.dp))
-
-                        when (regMode) {
-                            RegisterSubMode.Email -> {
-                                PrimaryAuthButton(
-                                    text = "メール認証して新規登録",
-                                    enabled = regEmail.isNotBlank() && regEmailCode.length >= 4 && regTekuzoneId.isNotBlank() && regPassword.length >= 6 && !loading,
-                                    loading = loading,
-                                    onClick = {
-                                        runAuthAction {
-                                            Account.registerWithEmail(
-                                                email = regEmail,
-                                                code = regEmailCode,
-                                                tekuzoneId = regTekuzoneId,
-                                                displayName = regDisplayName,
-                                                password = regPassword,
-                                            )
-                                        }
-                                    },
+                        when (regStep) {
+                            1 -> {
+                                Text(
+                                    "ステップ 1 / 3：メールアドレス認証",
+                                    color = c.onSurfaceVariant,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
                                 Spacer(Modifier.height(10.dp))
-                                PasskeyActionCard(
-                                    text = "メール認証 ＋ パスキー作成で登録",
-                                    enabled = regEmail.isNotBlank() && regEmailCode.length >= 4 && regTekuzoneId.isNotBlank() && !loading,
-                                    onClick = {
-                                        val act = context.findSignInActivity()
-                                        if (act == null) {
-                                            error = "アクティビティを取得できませんでした"
-                                        } else {
-                                            runAuthAction {
-                                                Account.registerWithPasskey(
-                                                    activity = act,
-                                                    tekuzoneId = regTekuzoneId,
-                                                    displayName = regDisplayName,
-                                                    email = regEmail,
-                                                    emailCode = regEmailCode,
-                                                )
-                                            }
-                                        }
-                                    },
+                                EmailWithCodeButtonRow(
+                                    email = regEmail,
+                                    onEmailChange = { regEmail = it; error = null },
+                                    placeholder = "メールアドレス",
+                                    cooldownSec = codeCooldownSec,
+                                    sending = sendingCode,
+                                    onSendCode = { requestEmailCode(regEmail, "register") },
                                 )
-                            }
-
-                            RegisterSubMode.Passkey -> {
-                                PasskeyActionCard(
-                                    text = "パスキーを作成して新規登録",
-                                    enabled = regTekuzoneId.isNotBlank() && !loading,
-                                    onClick = {
-                                        val act = context.findSignInActivity()
-                                        if (act == null) {
-                                            error = "アクティビティを取得できませんでした"
-                                        } else {
-                                            runAuthAction {
-                                                Account.registerWithPasskey(
-                                                    activity = act,
-                                                    tekuzoneId = regTekuzoneId,
-                                                    displayName = regDisplayName,
-                                                )
-                                            }
-                                        }
-                                    },
+                                Spacer(Modifier.height(10.dp))
+                                AuthField(
+                                    value = regEmailCode,
+                                    onValueChange = { regEmailCode = it.filter(Char::isDigit).take(6); error = null },
+                                    placeholder = "6桁の認証コード",
+                                    icon = Icons.Rounded.Pin,
+                                    keyboardType = KeyboardType.NumberPassword,
+                                    imeAction = ImeAction.Done,
                                 )
-                            }
-
-                            RegisterSubMode.Local -> {
+                                Spacer(Modifier.height(14.dp))
                                 PrimaryAuthButton(
-                                    text = "ID・パスワードで新規登録",
-                                    enabled = regTekuzoneId.isNotBlank() && regPassword.length >= 6 && !loading,
+                                    text = "メールを認証して次へ",
+                                    enabled = regEmail.isNotBlank() && regEmailCode.length >= 4 && !loading,
                                     loading = loading,
                                     onClick = {
-                                        runAuthAction {
-                                            Account.registerLocal(
-                                                tekuzoneId = regTekuzoneId,
-                                                displayName = regDisplayName,
-                                                password = regPassword,
-                                            )
+                                        if (loading) return@PrimaryAuthButton
+                                        focusManager.clearFocus()
+                                        loading = true
+                                        clearFeedback()
+                                        scope.launch {
+                                            runCatching { Account.verifyEmailCode(regEmail, regEmailCode, "register") }
+                                                .onSuccess { token ->
+                                                    loading = false
+                                                    regMode = RegisterSubMode.Email
+                                                    regVerificationToken = token
+                                                    regStep = 2
+                                                }
+                                                .onFailure {
+                                                    loading = false
+                                                    error = it.message ?: "認証コードの確認に失敗しました"
+                                                }
                                         }
                                     },
                                 )
+                                Spacer(Modifier.height(14.dp))
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    HorizontalDivider(Modifier.weight(1f), color = c.outlineVariant)
+                                    Text(
+                                        "またはメールなしで登録",
+                                        color = c.onSurfaceVariant,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 12.dp),
+                                    )
+                                    HorizontalDivider(Modifier.weight(1f), color = c.outlineVariant)
+                                }
+                                Spacer(Modifier.height(12.dp))
+                                SsoButton(
+                                    text = "パスキーで登録する",
+                                    containerColor = c.surfaceContainerHigh,
+                                    contentColor = c.onSurface,
+                                    icon = Icons.Rounded.Fingerprint,
+                                    onClick = {
+                                        regMode = RegisterSubMode.Passkey
+                                        regVerificationToken = null
+                                        clearFeedback()
+                                        regStep = 2
+                                    },
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                SsoButton(
+                                    text = "ID・パスワードのみで登録する",
+                                    containerColor = c.surfaceContainerHigh,
+                                    contentColor = c.onSurface,
+                                    icon = Icons.Rounded.Person,
+                                    onClick = {
+                                        regMode = RegisterSubMode.Local
+                                        regVerificationToken = null
+                                        clearFeedback()
+                                        regStep = 2
+                                    },
+                                )
+                            }
+
+                            2 -> {
+                                Text(
+                                    "ステップ 2 / 3：IDと表示名",
+                                    color = c.onSurfaceVariant,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(10.dp))
+                                AuthField(
+                                    value = regTekuzoneId,
+                                    onValueChange = { regTekuzoneId = it; error = null },
+                                    placeholder = "てくぞねID（半角英数字・例: my_id）",
+                                    icon = Icons.Rounded.Person,
+                                    keyboardType = KeyboardType.Ascii,
+                                    imeAction = ImeAction.Next,
+                                )
+                                idAvailabilityHint?.let { (available, msg) ->
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        msg,
+                                        color = if (available) Color(0xFF2E7D32) else c.error,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
+                                    )
+                                }
+                                Spacer(Modifier.height(10.dp))
+                                AuthField(
+                                    value = regDisplayName,
+                                    onValueChange = { regDisplayName = it; error = null },
+                                    placeholder = "表示名・ニックネーム（任意）",
+                                    icon = Icons.Rounded.Badge,
+                                    keyboardType = KeyboardType.Text,
+                                    imeAction = ImeAction.Done,
+                                )
+                                Spacer(Modifier.height(14.dp))
+                                PrimaryAuthButton(
+                                    text = "次へ",
+                                    enabled = regTekuzoneId.isNotBlank() && !loading,
+                                    loading = loading,
+                                    onClick = {
+                                        val tid = regTekuzoneId.trim()
+                                        if (!Regex("^[A-Za-z0-9_\\-.]+$").matches(tid)) {
+                                            error = "てくぞねIDは半角英数字・ハイフン・アンダースコア・ドットのみ使用可能です"
+                                            return@PrimaryAuthButton
+                                        }
+                                        loading = true
+                                        clearFeedback()
+                                        scope.launch {
+                                            runCatching { Account.checkTekuzoneId(tid) }
+                                                .onSuccess { ok ->
+                                                    loading = false
+                                                    if (ok) regStep = 3
+                                                    else error = "このてくぞねIDは既に使用されています"
+                                                }
+                                                .onFailure {
+                                                    loading = false
+                                                    error = "IDの確認に失敗しました"
+                                                }
+                                        }
+                                    },
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Box(
+                                    Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .pressable { regStep = 1; clearFeedback() }
+                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                ) {
+                                    Text("← 戻る", color = c.onSurfaceVariant, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+
+                            else -> {
+                                Text(
+                                    "ステップ 3 / 3：認証方法の設定",
+                                    color = c.onSurfaceVariant,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(c.surfaceContainer)
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                ) {
+                                    Text(
+                                        text = if (regMode == RegisterSubMode.Email) {
+                                            "ID: @${regTekuzoneId.trim()}  /  メール: ${regEmail.trim()}"
+                                        } else {
+                                            "ID: @${regTekuzoneId.trim()}"
+                                        },
+                                        color = c.onSurfaceVariant,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                }
+                                Spacer(Modifier.height(12.dp))
+
+                                if (regMode != RegisterSubMode.Passkey) {
+                                    AuthPasswordField(
+                                        value = regPassword,
+                                        onValueChange = { regPassword = it; error = null },
+                                        placeholder = "パスワード（6文字以上）",
+                                        visible = showRegPassword,
+                                        onToggleVisible = { showRegPassword = !showRegPassword },
+                                    )
+                                    Spacer(Modifier.height(14.dp))
+                                }
+
+                                when (regMode) {
+                                    RegisterSubMode.Email -> {
+                                        PrimaryAuthButton(
+                                            text = "パスワードを設定して登録",
+                                            enabled = regPassword.length >= 6 && !loading,
+                                            loading = loading,
+                                            onClick = {
+                                                runAuthAction {
+                                                    Account.registerWithEmail(
+                                                        email = regEmail,
+                                                        verificationToken = regVerificationToken,
+                                                        tekuzoneId = regTekuzoneId,
+                                                        displayName = regDisplayName,
+                                                        password = regPassword,
+                                                    )
+                                                }
+                                            },
+                                        )
+                                        Spacer(Modifier.height(10.dp))
+                                        PasskeyActionCard(
+                                            text = "パスキーを作成して登録（パスワード不要）",
+                                            enabled = !loading,
+                                            onClick = {
+                                                val act = context.findSignInActivity()
+                                                if (act == null) {
+                                                    error = "アクティビティを取得できませんでした"
+                                                } else {
+                                                    runAuthAction {
+                                                        Account.registerWithPasskey(
+                                                            activity = act,
+                                                            tekuzoneId = regTekuzoneId,
+                                                            displayName = regDisplayName,
+                                                            email = regEmail,
+                                                            emailVerificationToken = regVerificationToken,
+                                                        )
+                                                    }
+                                                }
+                                            },
+                                        )
+                                    }
+
+                                    RegisterSubMode.Passkey -> {
+                                        PasskeyActionCard(
+                                            text = "パスキーを作成して登録",
+                                            enabled = !loading,
+                                            onClick = {
+                                                val act = context.findSignInActivity()
+                                                if (act == null) {
+                                                    error = "アクティビティを取得できませんでした"
+                                                } else {
+                                                    runAuthAction {
+                                                        Account.registerWithPasskey(
+                                                            activity = act,
+                                                            tekuzoneId = regTekuzoneId,
+                                                            displayName = regDisplayName,
+                                                        )
+                                                    }
+                                                }
+                                            },
+                                        )
+                                    }
+
+                                    RegisterSubMode.Local -> {
+                                        PrimaryAuthButton(
+                                            text = "アカウントを作成",
+                                            enabled = regPassword.length >= 6 && !loading,
+                                            loading = loading,
+                                            onClick = {
+                                                runAuthAction {
+                                                    Account.registerLocal(
+                                                        tekuzoneId = regTekuzoneId,
+                                                        displayName = regDisplayName,
+                                                        password = regPassword,
+                                                    )
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+
+                                Spacer(Modifier.height(6.dp))
+                                Box(
+                                    Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .pressable { regStep = 2; clearFeedback() }
+                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                ) {
+                                    Text("← 戻る", color = c.onSurfaceVariant, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                }
                             }
                         }
                     }

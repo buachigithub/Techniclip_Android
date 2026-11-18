@@ -226,20 +226,34 @@ object Account {
         fetchAndStoreProfile()
     }
 
+    /** Verify a 6-digit email code and return a short-lived `verification_token`. */
+    suspend fun verifyEmailCode(email: String, code: String, purpose: String = "register"): String = withContext(Dispatchers.IO) {
+        val res = postAuthJson(
+            "/api/auth/email/verify-code",
+            JSONObject()
+                .put("email", email.trim())
+                .put("code", code.trim())
+                .put("purpose", purpose),
+        )
+        res.getString("verification_token")
+    }
+
     /** Register a new account with verified email + password. */
     suspend fun registerWithEmail(
         email: String,
-        code: String,
+        code: String? = null,
+        verificationToken: String? = null,
         tekuzoneId: String,
         displayName: String?,
         password: String,
     ) = withContext(Dispatchers.IO) {
         val payload = JSONObject()
             .put("email", email.trim())
-            .put("code", code.trim())
             .put("tekuzone_id", tekuzoneId.trim())
             .put("password", password)
             .put("platform", "android")
+        if (!code.isNullOrBlank()) payload.put("code", code.trim())
+        if (!verificationToken.isNullOrBlank()) payload.put("verification_token", verificationToken.trim())
         if (!displayName.isNullOrBlank()) payload.put("display_name", displayName.trim())
         postAuthJson("/api/auth/email/register", payload)
         persistCookies()
@@ -303,6 +317,7 @@ object Account {
         displayName: String?,
         email: String? = null,
         emailCode: String? = null,
+        emailVerificationToken: String? = null,
     ) {
         val optRes = withContext(Dispatchers.IO) {
             val reqJson = JSONObject()
@@ -311,7 +326,8 @@ object Account {
             if (!displayName.isNullOrBlank()) reqJson.put("display_name", displayName.trim())
             if (!email.isNullOrBlank()) {
                 reqJson.put("email", email.trim())
-                reqJson.put("email_code", emailCode.orEmpty().trim())
+                if (!emailCode.isNullOrBlank()) reqJson.put("email_code", emailCode.trim())
+                if (!emailVerificationToken.isNullOrBlank()) reqJson.put("email_verification_token", emailVerificationToken.trim())
             }
             postAuthJson("/api/auth/passkey/register/options?platform=android", reqJson)
         }
