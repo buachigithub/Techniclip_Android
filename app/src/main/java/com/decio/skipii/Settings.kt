@@ -832,7 +832,7 @@ private fun DeveloperCard(player: PlayerState, modifier: Modifier = Modifier) {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            "てくぞね (TechniClip Zone クライアント)",
+            "てくぞね (Techniclip Zone クライアント)",
             fontFamily = RoundedHeavy,
             fontWeight = FontWeight.ExtraBold,
             fontSize = 17.sp,
@@ -1998,7 +1998,7 @@ private fun AboutPage(player: PlayerState) {
     val shareTitle = stringResource(R.string.settings_crash_share)
     Joined(4) { i, shape ->
         when (i) {
-            0 -> LinkSetting("tekuzone", shape, Icons.Rounded.PlayCircle, "てくにくりっぷ ぞーん (てくぞね)", "SkipiiベースのTechniClip Zone公式クライアント") {
+            0 -> LinkSetting("tekuzone", shape, Icons.Rounded.PlayCircle, "てくにくりっぷ ぞーん (てくぞね)", "SkipiiベースのTechniclip Zone公式クライアント") {
                 context.openOrSay(Intent(Intent.ACTION_VIEW, Uri.parse(TekuZone.BASE_URL))) { player.actionMessage = it }
             }
             1 -> LinkSetting("version", shape, Icons.Rounded.SystemUpdateAlt, stringResource(R.string.settings_version, BuildConfig.VERSION_NAME), updateStatus()) {

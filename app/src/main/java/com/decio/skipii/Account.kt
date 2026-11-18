@@ -110,7 +110,7 @@ class YouTubeRefusedException(val code: Int) : IOException(
 }
 
 /**
- * Signed-in TechniClip Zone (てくぞね) session.
+ * Signed-in Techniclip Zone (てくぞね) session.
  * Stores the `session` cookie encrypted in Android Keystore ([SecureStore]).
  */
 object Account {
@@ -139,7 +139,7 @@ object Account {
         }
     }
 
-    /** True once the WebView's cookies contain a TechniClip Zone `session` cookie. */
+    /** True once the WebView's cookies contain a Techniclip Zone `session` cookie. */
     fun looksSignedIn(cookieHeader: String?): Boolean {
         val names = cookieHeader.orEmpty().split(';').map { it.substringBefore('=').trim() }.toSet()
         return "session" in names
@@ -505,7 +505,7 @@ object Account {
 }
 
 /**
- * TechniClip Zone API client replacing YouTube's internal API.
+ * Techniclip Zone API client replacing YouTube's internal API.
  */
 object InnerTube {
 

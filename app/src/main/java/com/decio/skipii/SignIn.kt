@@ -92,7 +92,7 @@ private tailrec fun Context.findSignInActivity(): Activity? = when (this) {
 }
 
 /**
- * Native Material 3 Expressive sign-in & registration screen for TechniClip Zone (てくぞね),
+ * Native Material 3 Expressive sign-in & registration screen for Techniclip Zone (てくぞね),
  * supporting Passkeys (Android CredentialManager), Email verification (OTP & Password),
  * ID/Password login, and SSO WebView flows (Techniclip.com, Discord, Otomad).
  */
