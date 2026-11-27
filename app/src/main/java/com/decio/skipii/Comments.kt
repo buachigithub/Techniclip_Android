@@ -642,3 +642,46 @@ private fun CommentRow(comment: Comment, @Suppress("UNUSED_PARAMETER") state: Co
         }
     }
 }
+
+/**
+ * Full-height comments list + composer for Android XR's companion SpatialPanel (Xr.kt),
+ * without bottom-sheet drag chrome.
+ */
+@Composable
+internal fun XrCommentsPane(state: CommentsState, modifier: Modifier = Modifier) {
+    val c = MaterialTheme.colorScheme
+    val list = rememberLazyListState()
+    val nearEnd by remember {
+        derivedStateOf { (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= list.layoutInfo.totalItemsCount - 4 }
+    }
+    LaunchedEffect(nearEnd) { if (nearEnd) state.loadMore() }
+    Column(modifier.fillMaxSize()) {
+        LazyColumn(state = list, modifier = Modifier.weight(1f).fillMaxWidth()) {
+            items(state.comments, key = { "xr-comment-" + it.id }) { comment -> CommentRow(comment, state) }
+            if (state.loading || state.hasMore) item(key = "xr-comments-loading") {
+                Box(Modifier.fillMaxWidth().padding(20.dp), Alignment.Center) {
+                    CircularProgressIndicator(color = c.primary, strokeWidth = 3.dp, modifier = Modifier.size(26.dp))
+                }
+            }
+            if (!state.loading && state.comments.isEmpty()) item(key = "xr-comments-empty") {
+                Text(
+                    state.error ?: stringResource(if (state.disabled) R.string.comments_turned_off else R.string.comments_none),
+                    color = c.onSurfaceVariant,
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(20.dp),
+                )
+            }
+            item(key = "xr-comments-bottom") { Spacer(Modifier.height(12.dp)) }
+        }
+        if (Account.signedIn && !state.disabled) {
+            Composer(state)
+        } else if (!state.disabled) {
+            Text(
+                stringResource(R.string.comments_sign_in_to_comment),
+                color = c.onSurfaceVariant,
+                fontSize = 13.sp,
+                modifier = Modifier.fillMaxWidth().background(c.surfaceContainer).padding(horizontal = 20.dp, vertical = 14.dp),
+            )
+        }
+    }
+}

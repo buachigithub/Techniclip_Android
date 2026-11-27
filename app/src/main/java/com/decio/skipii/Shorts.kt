@@ -219,6 +219,8 @@ private const val LinksAhead = 5
 /** The glass samples the frame this wide (px), then blurs it: ~20 dp of blur once drawn full size. */
 private const val GlassSampleWidth = 40
 private const val GlassBlurRadius = 2
+/** Live ambient mirror reflection sample width (px) used only while folded to 90° Tabletop mode. */
+private const val ReflectionSampleWidth = 96
 
 /**
  * The Shorts tab can be turned off (GitHub issue #21; a switch in the account sheet). Off, the
@@ -357,6 +359,8 @@ class ShortsState(context: Context, private val scope: CoroutineScope) {
     // ── Glass ── tiny blurred copies of the frames under the bar, drawn under its tint. One per
     // page, so mid-swipe the glass over the incoming short shows that short, not the one leaving.
     internal val glassFrames = mutableStateMapOf<Int, ImageBitmap>()
+    /** High-res unblurred live frames used only for the 90° Tabletop bottom-half glass reflection. */
+    internal val reflectionFrames = mutableStateMapOf<Int, ImageBitmap>()
     /** Each page's video box in root pixels (unclipped), to line the glass up with the picture. */
     internal val videoRects = mutableStateMapOf<Int, Rect>()
     /** The bar's span in root pixels (set by [ShortsBar]); only frames reaching it are sampled. */
@@ -365,6 +369,12 @@ class ShortsState(context: Context, private val scope: CoroutineScope) {
     private val samples = HashMap<Int, Array<Bitmap?>>()
     private val flips = HashMap<Int, Int>()
     private val sampledAt = HashMap<Int, Long>()
+    private val reflectionSamples = HashMap<Int, Array<Bitmap?>>()
+    private val reflectionFlips = HashMap<Int, Int>()
+    private val reflectionSampledAt = HashMap<Int, Long>()
+    private var reflectionPixels = IntArray(0)
+    private var reflectionSpare = IntArray(0)
+    private val activeViews = HashMap<Int, java.lang.ref.WeakReference<TextureView>>()
     private var pixels = IntArray(0)
     private var spare = IntArray(0)
 
@@ -442,6 +452,11 @@ class ShortsState(context: Context, private val scope: CoroutineScope) {
         assigned.clear()
         glassFrames.clear()
         samples.clear()
+        reflectionFrames.clear()
+        reflectionSamples.clear()
+        reflectionFlips.clear()
+        reflectionSampledAt.clear()
+        activeViews.clear()
         items = list
         next = token
         index = at
@@ -919,6 +934,11 @@ class ShortsState(context: Context, private val scope: CoroutineScope) {
         assigned.clear()
         glassFrames.clear()
         samples.clear()
+        reflectionFrames.clear()
+        reflectionSamples.clear()
+        reflectionFlips.clear()
+        reflectionSampledAt.clear()
+        activeViews.clear()
     }
 
     /** A page left the pager: its glass sample goes with it. */
@@ -927,6 +947,11 @@ class ShortsState(context: Context, private val scope: CoroutineScope) {
         glassFrames.remove(page)
         samples.remove(page)
         sampledAt.remove(page)
+        reflectionFrames.remove(page)
+        reflectionSamples.remove(page)
+        reflectionFlips.remove(page)
+        reflectionSampledAt.remove(page)
+        activeViews.remove(page)
     }
 
     // ── Account ──
@@ -1065,7 +1090,56 @@ class ShortsState(context: Context, private val scope: CoroutineScope) {
         commentsOpen = true
     }
 
-    // ── Glass ──
+    // ── Glass & 90° Tabletop Reflection ──
+
+    /** When true (90° Tabletop mode), keep sampling live video frames for the bottom-half mirror reflection. */
+    private var tabletopReflection = false
+
+    internal fun setTabletopReflection(enabled: Boolean) {
+        tabletopReflection = enabled
+        if (enabled) {
+            refreshReflection()
+        } else {
+            reflectionFrames.clear()
+            reflectionSamples.clear()
+            reflectionFlips.clear()
+            reflectionSampledAt.clear()
+            reflectionPixels = IntArray(0)
+            reflectionSpare = IntArray(0)
+        }
+    }
+
+    internal fun refreshReflection() {
+        if (!tabletopReflection) return
+        activeViews[index]?.get()?.let { sampleReflection(it, index, force = true) }
+    }
+
+    internal fun registerView(view: TextureView, page: Int) {
+        activeViews[page] = java.lang.ref.WeakReference(view)
+        if (tabletopReflection && page == index) sampleReflection(view, page, force = true)
+    }
+
+    private fun sampleReflection(view: TextureView, page: Int, force: Boolean) {
+        if (!view.isAvailable || view.width <= 0 || view.height <= 0) return
+        val now = SystemClock.uptimeMillis()
+        if (!force && now - (reflectionSampledAt[page] ?: 0L) < 33L) return
+        reflectionSampledAt[page] = now
+        val w = ReflectionSampleWidth
+        val h = (w.toLong() * view.height / view.width).toInt().coerceIn(24, 144)
+        val flip = 1 - (reflectionFlips[page] ?: 0)
+        reflectionFlips[page] = flip
+        val pair = reflectionSamples.getOrPut(page) { arrayOfNulls(2) }
+        val bitmap = pair[flip]?.takeIf { it.width == w && it.height == h }
+            ?: Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { pair[flip] = it }
+        runCatching { view.getBitmap(bitmap) }.getOrNull() ?: return
+        val size = w * h
+        if (reflectionPixels.size != size) {
+            reflectionPixels = IntArray(size)
+            reflectionSpare = IntArray(size)
+        }
+        softBlurBitmap(bitmap, reflectionPixels, reflectionSpare, radius = 4, passes = 3)
+        reflectionFrames[page] = bitmap.asImageBitmap()
+    }
 
     /**
      * A frame reached page [page]'s view: sample it for the glass while it reaches the bar (≤ 30
@@ -1073,6 +1147,8 @@ class ShortsState(context: Context, private val scope: CoroutineScope) {
      */
     internal fun onFrameDrawn(view: TextureView, page: Int) {
         if (view.width <= 0 || view.height <= 0) return
+        activeViews[page] = java.lang.ref.WeakReference(view)
+        if (tabletopReflection && page == index) sampleReflection(view, page, force = false)
         val rect = videoRects[page] ?: return
         val underBar = rect.top < barBottom && rect.bottom > barTop
         if (!underBar && glassFrames.containsKey(page)) return
@@ -1138,7 +1214,10 @@ internal class ShortPlayer(context: Context, private val state: ShortsState) {
             /* handleAudioFocus = */ true,
         )
         .build()
-        .apply { repeatMode = Player.REPEAT_MODE_ONE }
+        .apply {
+            repeatMode = Player.REPEAT_MODE_ONE
+            videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+        }
 
     var index = -1
         private set
@@ -1172,7 +1251,10 @@ internal class ShortPlayer(context: Context, private val state: ShortsState) {
             }
             override fun onVideoSizeChanged(videoSize: VideoSize) {
                 val v = id ?: return
-                if (videoSize.width > 0 && videoSize.height > 0) state.aspects[v] = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    val ratio = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
+                    if (ratio.isFinite() && ratio > 0f) state.aspects[v] = ratio.coerceIn(0.25f, 4f)
+                }
             }
             override fun onPlayerError(error: PlaybackException) = state.onPlayerError(this@ShortPlayer, error)
         })
@@ -1387,11 +1469,13 @@ fun ShortsScreen(
                 )
             }
         }
-        if (shorts.commentsOpen) {
+        if (shorts.commentsOpen && !LocalWindowLayout.current.spatialUi) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 // Wide: beside the short (where its details are), so it keeps playing in full view.
                 val height = maxHeight
-                val margin = shortsMargin(LocalWindowLayout.current, maxWidth, height)
+                val curId = shorts.current?.id
+                val curAspect = curId?.let { shorts.aspects[it] ?: shorts.details[it]?.aspect } ?: (9f / 16f)
+                val margin = shortsMargin(LocalWindowLayout.current, maxWidth, height, curAspect, LocalDensity.current)
                 if (margin == null) CommentsPanel(shorts.comments, partialTop = height * 0.42f, onClose = { shorts.commentsOpen = false })
                 else Box(Modifier.padding(start = margin.first).width(margin.second).padding(horizontal = 12.dp)) {
                     CommentsPanel(shorts.comments, partialTop = height * 0.1f, onClose = { shorts.commentsOpen = false })
@@ -1450,18 +1534,43 @@ fun ShortsHomeCard(shorts: ShortsState, onOpen: () -> Unit, modifier: Modifier =
 }
 
 /**
- * Wide windows: the margin beside a (9:16) short that holds its buttons and comments — the right one on
- * a tablet, the right page on an open foldable — as (start, width). Null on a phone.
+ * Wide windows: the margin beside a short that holds its glass bar and comments as (start, width).
+ * - Returns null on phones, XR Full Space, 90° Tabletop (full-width bottom half), or when the
+ *   available side margin would be too narrow for the 6-slot glass bar (< 300 dp).
+ * - On an open book-style foldable, aligns strictly to the physical hinge right edge (`foldBoundsX`)
+ *   for vertical shorts or half-open book posture so neither video nor glass bar straddles the crease.
  */
-internal fun shortsMargin(window: WindowLayout, width: Dp, height: Dp): Pair<Dp, Dp>? {
-    if (!window.wide) return null
-    val video = minOf(width, height * (9f / 16f))
-    val start = if (window.foldX != null) video else (width + video) / 2
-    return start to (width - start)
+internal fun shortsMargin(
+    window: WindowLayout,
+    width: Dp,
+    height: Dp,
+    aspect: Float = 9f / 16f,
+    density: Density? = null,
+): Pair<Dp, Dp>? {
+    if (!window.wide || window.spatialUi || window.tabletopY != null) return null
+    val foldBounds = window.foldBoundsX
+    if (foldBounds != null && density != null) {
+        val foldRight = with(density) { foldBounds.endInclusive.toDp() }
+        val rightWidth = width - foldRight
+        return if ((aspect < 1f || window.foldHalfOpen) && rightWidth >= 300.dp) foldRight to rightWidth else null
+    }
+    if (aspect >= 1f) return null
+    val video = minOf(width, height * aspect)
+    val start = (width + video) / 2
+    val rightWidth = width - start
+    return if (rightWidth >= 280.dp) start to rightWidth else null
 }
 
 @Composable
 private fun ShortsPager(shorts: ShortsState, overlayBottom: Dp, barProgress: () -> Float) {
+    val isTabletop = LocalWindowLayout.current.tabletopY != null
+    DisposableEffect(isTabletop) {
+        shorts.setTabletopReflection(isTabletop)
+        onDispose { if (isTabletop) shorts.setTabletopReflection(false) }
+    }
+    LaunchedEffect(isTabletop, shorts.index) {
+        if (isTabletop) shorts.refreshReflection()
+    }
     val pager = rememberPagerState(initialPage = shorts.index.coerceIn(0, (shorts.items.size - 1).coerceAtLeast(0))) { shorts.items.size }
     LaunchedEffect(pager) { snapshotFlow { pager.settledPage }.collect { shorts.select(it) } }
     LaunchedEffect(shorts.pageRequest) {
@@ -1483,17 +1592,22 @@ private fun ShortPage(shorts: ShortsState, page: Int, overlayBottom: Dp, barProg
     val item = shorts.items.getOrNull(page) ?: return
     val details = shorts.details[item.id]
     val failure = shorts.failed[item.id]
-    val aspect = shorts.aspects[item.id] ?: details?.aspect ?: (9f / 16f)
+    val knownAspect = shorts.aspects[item.id] ?: details?.aspect
+    val aspect = (knownAspect ?: (9f / 16f)).takeIf { it.isFinite() && it > 0f }?.coerceIn(0.25f, 4f) ?: (9f / 16f)
     val onScreen = shorts.index == page
     DisposableEffect(page) { onDispose { shorts.forgetPage(page) } }
     // Wide windows (Rail 3): the short as big as the window allows, never cropped — full height,
-    // centred on a tablet, against the left edge on an open foldable (its details on the right page).
+    // centred on a tablet, inside the left screen on a book foldable, or in the top half with a live
+    // mirror reflection on the bottom half in 90° Tabletop mode.
     val window = LocalWindowLayout.current
+    val density = LocalDensity.current
+    val isTabletop = window.tabletopY != null
     // Thumbs thrown by double taps, each where its tap landed (GitHub #47).
     val thumbs = remember { mutableStateListOf<TapThumb>() }
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
+            .clipToBounds()
             .background(Color.Black)
             .shortTaps(
                 page,
@@ -1501,39 +1615,96 @@ private fun ShortPage(shorts: ShortsState, page: Int, overlayBottom: Dp, barProg
                 onDoubleTap = { at -> if (shorts.index == page && shorts.likeFromTap()) thumbs += TapThumb(at) },
             ),
     ) {
+        val pageWidthPx = constraints.maxWidth
+        val pageHeightPx = constraints.maxHeight
         val wide = window.wide
-        val videoWidth = if (wide) minOf(maxWidth, maxHeight * aspect) else maxWidth
-        val videoStart = if (!wide || window.foldX != null) 0.dp else (maxWidth - videoWidth) / 2
-        if (wide) {
+        val tabletopRange = window.tabletopY
+        val foldTopDp = tabletopRange?.let { with(density) { it.start.toDp() }.coerceIn(0.dp, maxHeight) }
+        val foldBottomDp = tabletopRange?.let { with(density) { it.endInclusive.toDp() }.coerceIn(0.dp, maxHeight) }
+
+        val foldBounds = window.foldBoundsX
+        val foldLeftDp = foldBounds?.let { with(density) { it.start.toDp() }.coerceIn(0.dp, maxWidth) }
+        val foldRightDp = foldBounds?.let { with(density) { it.endInclusive.toDp() }.coerceIn(0.dp, maxWidth) }
+        val splitAtFold = !isTabletop && foldLeftDp != null && foldRightDp != null &&
+            foldLeftDp > 0.dp && (aspect < 1f || window.foldHalfOpen) && (maxWidth - foldRightDp) >= 300.dp
+
+        val videoWidth = when {
+            isTabletop -> maxWidth
+            splitAtFold -> minOf(foldLeftDp!!, maxHeight * aspect)
+            wide -> minOf(maxWidth, maxHeight * aspect)
+            else -> maxWidth
+        }
+        val videoStart = when {
+            isTabletop -> 0.dp
+            splitAtFold -> ((foldLeftDp!! - videoWidth) / 2).coerceAtLeast(0.dp)
+            !wide -> 0.dp
+            else -> ((maxWidth - videoWidth) / 2).coerceAtLeast(0.dp)
+        }
+        val sideTabletMargin = !isTabletop && !splitAtFold && wide && aspect < 1f && videoStart >= 200.dp
+
+        if (wide && !isTabletop) {
             // Either side: the short's own colours, blurred and dimmed.
             AsyncImage(
                 model = item.thumbnail, contentDescription = null, contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize().blur(48.dp).graphicsLayer { alpha = 0.55f },
             )
         }
-        Box(Modifier.fillMaxSize().clipToBounds()) {
-            // Vertical shorts fill a phone's screen (a little cropped at the sides); wider ones fit its width.
+
+        // Keep a single ShortVideo composition slot across posture & orientation changes so folding
+        // or rotating never destroys/recreates the TextureView. Contain strictly within the active pane
+        // and only allow cover-cropping for genuine portrait Shorts on portrait phones (never in landscape
+        // or before the real video aspect is known, preventing 3×–4.5× zoom blow-ups during rotation).
+        val tabletopSplit = isTabletop && foldTopDp != null && foldBottomDp != null && foldTopDp > 0.dp
+        val isPortraitWindow = maxHeight > maxWidth
+        val windowAspect = if (maxHeight > 0.dp) maxWidth / maxHeight else 1f
+        val allowCover = !wide && !tabletopSplit && !splitAtFold && isPortraitWindow &&
+            shorts.aspects[item.id] != null && aspect < 0.7f && windowAspect >= aspect * 0.78f
+        val stageModifier = when {
+            tabletopSplit -> Modifier.fillMaxWidth().height(foldTopDp!!).clipToBounds()
+            splitAtFold -> Modifier.width(foldLeftDp!!).fillMaxHeight().clipToBounds()
+            else -> Modifier.fillMaxSize().clipToBounds()
+        }
+        Box(stageModifier, contentAlignment = Alignment.Center) {
             Box(
                 Modifier
-                    .padding(start = videoStart)
-                    .width(videoWidth)
-                    .fillMaxHeight()
-                    .aspectFit(aspect, cover = !wide && aspect < 0.7f)
+                    .fillMaxSize()
+                    .aspectFit(aspect, cover = allowCover)
                     .onGloballyPositioned { shorts.videoRects[page] = Rect(it.positionInRoot(), it.size.toSize()) },
             ) {
                 AsyncImage(model = item.thumbnail, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                ShortVideo(shorts, page, Modifier.fillMaxSize())
+                ShortVideo(
+                    shorts = shorts,
+                    page = page,
+                    widthPx = pageWidthPx,
+                    heightPx = pageHeightPx,
+                    aspect = aspect,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
-        // Shades for the status bar's icons and the text.
-        Box(
-            Modifier.fillMaxWidth().height(110.dp)
-                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.38f), Color.Black.copy(alpha = 0f)))),
-        )
-        Box(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(330.dp)
-                .background(Brush.verticalGradient(0f to Color.Black.copy(alpha = 0f), 0.35f to Color.Black.copy(alpha = 0.18f), 1f to Color.Black.copy(alpha = 0.62f))),
-        )
+        if (tabletopSplit) {
+            // 90° Tabletop / Flex mode: glossy live mirror reflection of the standing Short on the bottom half.
+            TabletopReflectionSurface(
+                frame = shorts.reflectionFrames[page],
+                fallbackThumbnail = item.thumbnail,
+                aspect = aspect,
+                mirrorHeight = foldTopDp!!,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = foldBottomDp!!),
+            )
+        }
+        if (!isTabletop) {
+            // Shades for the status bar's icons and the text.
+            Box(
+                Modifier.fillMaxWidth().height(110.dp)
+                    .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.38f), Color.Black.copy(alpha = 0f)))),
+            )
+            Box(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(330.dp)
+                    .background(Brush.verticalGradient(0f to Color.Black.copy(alpha = 0f), 0.35f to Color.Black.copy(alpha = 0.18f), 1f to Color.Black.copy(alpha = 0.62f))),
+            )
+        }
         // A finger on the progress line: the words make way for the time it lands on.
         val scrubbing = onScreen && shorts.scrub != null
         val reduced = rememberReducedMotion()
@@ -1543,13 +1714,12 @@ private fun ShortPage(shorts: ShortsState, page: Int, overlayBottom: Dp, barProg
             label = "shortScrub",
         )
         if (details != null) {
-            val shade = LocalTextStyle.current.copy(shadow = Shadow(Color.Black.copy(alpha = 0.3f), Offset(0f, 2f), 4f))
-            // Wide: in the margin beside the short, a size up — the left one on a tablet (the glass bar
-            // has the right), the right page on an open foldable, above the bar.
+            val shade = LocalTextStyle.current.copy(shadow = Shadow(Color.Black.copy(alpha = 0.45f), Offset(0f, 2f), 5f))
             val textPlace = when {
-                !wide -> Modifier.fillMaxWidth().padding(start = 16.dp, end = 24.dp, bottom = overlayBottom + LineRoom)
-                window.foldX != null -> Modifier.fillMaxWidth().padding(start = videoWidth + 28.dp, end = 28.dp, bottom = overlayBottom + 8.dp)
-                else -> Modifier.width(videoStart).padding(start = 32.dp, end = 32.dp, bottom = 40.dp)
+                isTabletop -> Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = overlayBottom + LineRoom + 8.dp)
+                splitAtFold -> Modifier.fillMaxWidth().padding(start = foldRightDp!! + 24.dp, end = 24.dp, bottom = overlayBottom + LineRoom + 6.dp)
+                sideTabletMargin -> Modifier.width(videoStart).padding(start = 32.dp, end = 32.dp, bottom = 40.dp)
+                else -> Modifier.fillMaxWidth().padding(start = 20.dp, end = 24.dp, bottom = overlayBottom + LineRoom)
             }
             val openChannel = LocalChannelOpener.current
             Column(Modifier.align(Alignment.BottomStart).then(textPlace).graphicsLayer { alpha = 1f - swell }) {
@@ -1568,17 +1738,26 @@ private fun ShortPage(shorts: ShortsState, page: Int, overlayBottom: Dp, barProg
                 if (details.item.title.isNotBlank()) {
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        details.item.title, color = Ink, fontSize = if (wide) 19.sp else 14.sp, lineHeight = if (wide) 25.sp else 19.sp,
-                        fontWeight = if (wide) FontWeight.Bold else null, maxLines = if (wide) 5 else 3, overflow = TextOverflow.Ellipsis, style = shade,
+                        details.item.title, color = Ink, fontSize = if (wide) 18.sp else 14.sp, lineHeight = if (wide) 24.sp else 19.sp,
+                        fontWeight = if (wide) FontWeight.Bold else null, maxLines = if (wide && !isTabletop) 4 else 2, overflow = TextOverflow.Ellipsis, style = shade,
                     )
                 }
             }
         }
-        // How far in (#48): a line between the words and the glass bar (on a wide window, along the
-        // short's own bottom); drag along it, or tap it, to go anywhere in the short (#44).
-        val lineStart = if (wide) videoStart + LineInset else LineInset
-        val lineWidth = (if (wide) videoWidth else maxWidth) - LineInset * 2
-        val lineCentre = if (wide) LineWideBottom else overlayBottom - LineOverBar
+        // How far in (#48): a line between the words and the glass bar (on a Book foldable right above
+        // the glass bar on the right page so it never hides behind the bottom taskbar).
+        val lineOnVideo = sideTabletMargin && !isTabletop
+        val lineStart = when {
+            splitAtFold -> foldRightDp!! + LineInset
+            lineOnVideo -> videoStart + LineInset
+            else -> LineInset
+        }
+        val lineWidth = when {
+            splitAtFold -> (maxWidth - foldRightDp!! - LineInset * 2).coerceAtLeast(0.dp)
+            lineOnVideo -> (videoWidth - LineInset * 2).coerceAtLeast(0.dp)
+            else -> (maxWidth - LineInset * 2).coerceAtLeast(0.dp)
+        }
+        val lineCentre = if (lineOnVideo) LineWideBottom else overlayBottom - LineOverBar
         val view = LocalView.current
         if (scrubbing || swell > 0f) {
             val at = shorts.scrub ?: shorts.progress
@@ -1860,16 +2039,36 @@ private fun ThumbBurst(thumb: TapThumb, onDone: () -> Unit) {
  * player has drawn a frame of its short here, so a reused view never flashes an older picture.
  */
 @Composable
-private fun ShortVideo(shorts: ShortsState, page: Int, modifier: Modifier) {
+private fun ShortVideo(
+    shorts: ShortsState,
+    page: Int,
+    widthPx: Int,
+    heightPx: Int,
+    aspect: Float,
+    modifier: Modifier,
+) {
     val player = shorts.assigned[page]
     val latest by rememberUpdatedState(player)
     var surface by remember { mutableStateOf<Surface?>(null) }
     AndroidView(
         factory = { context ->
             TextureView(context).apply {
+                layoutParams = android.view.ViewGroup.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                )
                 surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) { surface = Surface(st) }
-                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {}
+                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
+                        setTransform(null)
+                        surface = Surface(st)
+                        shorts.registerView(this@apply, page)
+                    }
+                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
+                        setTransform(null)
+                        invalidate()
+                        post { setTransform(null); invalidate() }
+                        shorts.registerView(this@apply, page)
+                    }
                     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                         surface?.let { s -> latest?.detach(s); s.release() }
                         surface = null
@@ -1880,6 +2079,21 @@ private fun ShortVideo(shorts: ShortsState, page: Int, modifier: Modifier) {
                         shorts.onFrameDrawn(this@apply, page)
                     }
                 }
+                addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                    if ((right - left) != (oldRight - oldLeft) || (bottom - top) != (oldBottom - oldTop)) {
+                        setTransform(null)
+                        postInvalidateOnAnimation()
+                    }
+                }
+            }
+        },
+        update = { view ->
+            // Read orientation/container dimensions and aspect so Compose always re-runs update on
+            // rotation/fold/aspect changes and clears any stale TextureView transform matrix.
+            if (widthPx > 0 && heightPx > 0 && aspect > 0f) {
+                view.setTransform(null)
+                view.requestLayout()
+                view.invalidate()
             }
         },
         modifier = modifier.graphicsLayer { alpha = if (latest?.firstFrame == true) 1f else 0f },
@@ -1948,7 +2162,20 @@ fun ShortsBar(
         val g = remember(constraints.maxWidth, constraints.maxHeight, density) {
             GlassGeometry(constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat(), density)
         }
-        Box(Modifier.fillMaxSize().drawBehind { drawGlass(shorts, g, progress(), origin) })
+        val isTabletop = LocalWindowLayout.current.tabletopY != null
+        val tabletopDark = remember(ThemeSettings.seed) { schemeFor(context, ThemeSettings.seed, dark = true) }
+        Box(
+            Modifier.fillMaxSize().drawBehind {
+                drawGlass(
+                    shorts = shorts,
+                    g = g,
+                    p = progress(),
+                    origin = origin,
+                    tabletopFill = if (isTabletop) tabletopDark.surfaceContainerHigh.copy(alpha = 0.24f) else null,
+                    tabletopBorder = if (isTabletop) tabletopDark.outlineVariant.copy(alpha = 0.36f) else null,
+                )
+            },
+        )
 
         val id = shorts.current?.id
         val details = id?.let { shorts.details[it] }
@@ -2144,7 +2371,14 @@ private val GlassTone: ColorFilter = run {
 }
 
 /** The two glass pieces: the blurred frame lined up with the picture under them, then the tint. */
-private fun DrawScope.drawGlass(shorts: ShortsState, g: GlassGeometry, p: Float, origin: Offset) {
+private fun DrawScope.drawGlass(
+    shorts: ShortsState,
+    g: GlassGeometry,
+    p: Float,
+    origin: Offset,
+    tabletopFill: Color? = null,
+    tabletopBorder: Color? = null,
+) {
     val alpha = ramp(p, 0f, 0.28f)
     if (alpha <= 0f) return
     val s = g.split(p)
@@ -2165,7 +2399,19 @@ private fun DrawScope.drawGlass(shorts: ShortsState, g: GlassGeometry, p: Float,
                 ),
             )
         }
-        drawFrost(shape, under, origin, alpha, GlassTint)
+        if (tabletopFill != null && under.isEmpty()) {
+            drawPath(shape, color = tabletopFill, alpha = alpha)
+            if (tabletopBorder != null) {
+                drawPath(
+                    shape,
+                    color = tabletopBorder,
+                    alpha = alpha,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
+                )
+            }
+        } else {
+            drawFrost(shape, under, origin, alpha, GlassTint)
+        }
     }
 }
 

@@ -303,20 +303,31 @@ fun SettingsScreen(
     if (wide) {
         val detail = page ?: last
         val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+        val windowLayout = LocalWindowLayout.current
+        val density = LocalDensity.current
         BoxWithConstraints(
             Modifier
                 .fillMaxSize()
                 .background(c.surface)
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
         ) {
-            val listWidth = (maxWidth * 0.45f).coerceIn(300.dp, 400.dp)
+            // On an open book-style foldable, align the list-detail split cleanly to the physical hinge
+            // so neither pane straddles the crease and left quick-toggle tiles get full half-screen width.
+            val foldBounds = windowLayout.foldBoundsX
+            val hingeGap = if (foldBounds != null) with(density) { (foldBounds.endInclusive - foldBounds.start).toDp() } else 0.dp
+            val listWidth = if (foldBounds != null) {
+                with(density) { foldBounds.start.toDp() }.coerceIn(280.dp, maxWidth - hingeGap - 280.dp)
+            } else {
+                (maxWidth * 0.45f).coerceIn(300.dp, 400.dp)
+            }
             Row(Modifier.fillMaxSize()) {
                 Box(Modifier.width(listWidth).fillMaxHeight()) { Front(selected = detail) }
+                if (hingeGap > 0.dp) Spacer(Modifier.width(hingeGap))
                 Box(
                     Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .padding(top = statusTop + 8.dp, end = 12.dp)
+                        .padding(top = statusTop + 8.dp, start = if (foldBounds != null) 8.dp else 0.dp, end = 12.dp)
                         .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                         .padding(bottom = 12.dp)
                         .clip(RoundedCornerShape(PanelCorner))

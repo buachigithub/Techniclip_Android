@@ -140,7 +140,16 @@ fun ScreenHeader(
             letterSpacing = (-1.3).sp,
             maxLines = 1,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { actions() }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val windowLayout = LocalWindowLayout.current
+            if (windowLayout.xr && !windowLayout.spatialUi) {
+                XrEnterFullSpacePill()
+            }
+            actions()
+        }
     }
 }
 

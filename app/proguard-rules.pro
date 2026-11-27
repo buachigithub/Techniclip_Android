@@ -24,3 +24,6 @@
 # and method names and line numbers so a stack trace reads without a mapping file (the source is public).
 -dontobfuscate
 -keepattributes SourceFile,LineNumberTable
+
+# Android XR compileOnly extensions (loaded by the system on XR devices only).
+-dontwarn com.android.extensions.xr.**

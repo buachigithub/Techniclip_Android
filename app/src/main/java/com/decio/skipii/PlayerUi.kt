@@ -160,8 +160,10 @@ sealed interface PlayerLayout {
     data object Phone : PlayerLayout
     /** A tablet: video, details and comments in one scroll; More videos in a column [moreWidth] wide on the right. */
     data class Tablet(val moreWidth: Dp) : PlayerLayout
-    /** An open foldable: the video across the top; details and comments on the left page (up to the fold at [foldX]), More videos on the right. */
-    data class Book(val foldX: Dp) : PlayerLayout
+    /** An open foldable: flat = video across top + 2-pane split at hinge; half-open book = video+details on left page, More videos on right page. */
+    data class Book(val foldX: Dp, val hingeGap: Dp = 0.dp, val halfOpen: Boolean = false) : PlayerLayout
+    /** Android XR Full Space main panel: video stage and details here, while More videos & comments live in the companion SpatialPanel. */
+    data object XrMain : PlayerLayout
 }
 
 @Composable
@@ -365,12 +367,12 @@ fun PlayerScreen(
                             }
                         }
                     }
-            } else {
+            } else if (layout !is PlayerLayout.XrMain) {
                 inlineComments(state.comments)
             }
         }
         when (layout) {
-            PlayerLayout.Phone -> Column(Modifier.fillMaxSize()) {
+            PlayerLayout.Phone, PlayerLayout.XrMain -> Column(Modifier.fillMaxSize()) {
                 Spacer(Modifier.height(top + StageTopGap))
                 // Pinned: the video stays put while the details scroll beneath it.
                 VideoStage(state, morph, fold, onCollapse, onFullscreen, interactive)
@@ -389,25 +391,45 @@ fun PlayerScreen(
                 if (showDetails) {
                     MoreVideosColumn(
                         state, onOpen,
-                        // The bar is centred on the screen, so it stands over this column too.
-                        contentPadding = PaddingValues(top = top + 4.dp, bottom = bottomClearance + 16.dp),
+                        // The player bar is docked inside the left video+details column, so More videos scrolls clear.
+                        contentPadding = PaddingValues(top = top + 4.dp, bottom = bottom + 24.dp),
                         modifier = Modifier.width(layout.moreWidth).fillMaxHeight().then(listLook),
                     )
                 }
             }
-            // Open foldable: the video across the top; under it the details and comments on the left
-            // page, More videos on the right (Derek, 2026-11-02, after trying them the other way round).
-            is PlayerLayout.Book -> Column(Modifier.fillMaxSize()) {
-                Spacer(Modifier.height(top + StageTopGap))
-                VideoStage(state, morph, fold, onCollapse, onFullscreen, interactive)
-                if (!showDetails) Spacer(Modifier.weight(1f)) else Row(Modifier.weight(1f)) {
-                    DetailsList(Modifier.width(layout.foldX))
-                    MoreVideosColumn(
-                        state, onOpen,
-                        // The bar is centred on the screen, so it stands over this page too.
-                        contentPadding = PaddingValues(bottom = bottomClearance + 16.dp),
-                        modifier = Modifier.weight(1f).fillMaxHeight().then(listLook),
-                    )
+            // Open foldable:
+            // - Flat (180°): full-width video across the top, details+comments on the left page and More videos on the right page (split cleanly around the hinge).
+            // - Half-open Book posture (~90° vertical fold): video+details stay completely on the left page so the picture is never bent across the hinge, while More videos fills the right page.
+            is PlayerLayout.Book -> if (layout.halfOpen) {
+                Row(Modifier.fillMaxSize()) {
+                    Column(Modifier.width(layout.foldX).fillMaxHeight()) {
+                        Spacer(Modifier.height(top + StageTopGap))
+                        VideoStage(state, morph, fold, onCollapse, onFullscreen, interactive)
+                        if (!showDetails) Spacer(Modifier.weight(1f)) else DetailsList(Modifier.weight(1f))
+                    }
+                    if (layout.hingeGap > 0.dp) Spacer(Modifier.width(layout.hingeGap))
+                    if (showDetails) {
+                        MoreVideosColumn(
+                            state, onOpen,
+                            contentPadding = PaddingValues(top = top + 4.dp, bottom = bottom + 24.dp),
+                            modifier = Modifier.weight(1f).fillMaxHeight().then(listLook),
+                        )
+                    }
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    Spacer(Modifier.height(top + StageTopGap))
+                    VideoStage(state, morph, fold, onCollapse, onFullscreen, interactive)
+                    if (!showDetails) Spacer(Modifier.weight(1f)) else Row(Modifier.weight(1f)) {
+                        DetailsList(Modifier.width(layout.foldX))
+                        if (layout.hingeGap > 0.dp) Spacer(Modifier.width(layout.hingeGap))
+                        MoreVideosColumn(
+                            state, onOpen,
+                            // On a foldable, the floating player bar sits inside the left pane so More videos scrolls clear.
+                            contentPadding = PaddingValues(bottom = bottom + 24.dp),
+                            modifier = Modifier.weight(1f).fillMaxHeight().then(listLook),
+                        )
+                    }
                 }
             }
         }
@@ -441,7 +463,7 @@ fun PlayerScreen(
                 when (layout) {
                     is PlayerLayout.Book -> Modifier.fillMaxHeight().width(layout.foldX)
                     is PlayerLayout.Tablet -> Modifier.fillMaxSize().padding(end = layout.moreWidth)
-                    PlayerLayout.Phone -> Modifier.fillMaxSize()
+                    PlayerLayout.Phone, PlayerLayout.XrMain -> Modifier.fillMaxSize()
                 }
                     .graphicsLayer {
                     val p = morph.progress.value
@@ -476,7 +498,13 @@ fun PlayerScreen(
  * for the open video's channel and the rest when More videos holds both.
  */
 @Composable
-private fun MoreVideosColumn(state: PlayerState, onOpen: (VideoItem) -> Unit, contentPadding: PaddingValues, modifier: Modifier) {
+internal fun MoreVideosColumn(
+    state: PlayerState,
+    onOpen: (VideoItem) -> Unit,
+    contentPadding: PaddingValues,
+    modifier: Modifier,
+    showTitle: Boolean = true,
+) {
     val c = MaterialTheme.colorScheme
     val related = state.details?.related.orEmpty()
     val channel = state.current?.channel.orEmpty()
@@ -489,7 +517,7 @@ private fun MoreVideosColumn(state: PlayerState, onOpen: (VideoItem) -> Unit, co
         else -> related
     }
     LazyColumn(modifier, contentPadding = contentPadding) {
-        item(key = "title") { SectionTitle(stringResource(R.string.player_more_videos)) }
+        if (showTitle) item(key = "title") { SectionTitle(stringResource(R.string.player_more_videos)) }
         if (fromChannel.isNotEmpty() && fromChannel.size < related.size) item(key = "filters") {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
@@ -715,49 +743,58 @@ private val FullscreenPull = 64.dp
 @Composable
 private fun PlayerActions(state: PlayerState) {
     var advertOpen by remember { mutableStateOf(false) }
-    Row(
-        Modifier
-            .padding(top = 14.dp)
-            .bleed(20.dp)
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AccountActions(state)
-        val context = LocalContext.current
-        val item = state.current
-        ActionPill(
-            icon = Icons.Rounded.Share,
-            label = null,
-            active = false,
-            flourish = null,
-            shape = RoundedCornerShape(22.dp),
-            description = stringResource(R.string.player_share),
-        ) { item?.let { shareLink(context, "${TekuZone.BASE_URL}/video/${it.id}", it.title) } }
-        ActionPill(
-            icon = Icons.Rounded.Campaign,
-            label = null,
-            active = false,
-            flourish = null,
-            shape = RoundedCornerShape(22.dp),
-            description = "この動画を広告する",
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+        // Narrow cover screens (~337 dp) and Book half-panes (~336 dp) fit all 5 action pills cleanly
+        // without slicing the 5th button at the fold/edge when horizontal pill padding is slightly tighter.
+        val compact = maxWidth < 340.dp
+        val pillPad = if (compact) 11.dp else 16.dp
+        Row(
+            Modifier
+                .padding(top = 14.dp)
+                .bleed(20.dp)
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (!Account.signedIn) {
-                state.actionMessage = "広告するにはログインが必要です"
-            } else if (item != null) {
-                advertOpen = true
-            }
-        }
-        if (state.captions.tracks.isNotEmpty()) {
+            AccountActions(state, horizontalPadding = pillPad)
+            val context = LocalContext.current
+            val item = state.current
             ActionPill(
-                icon = Icons.Rounded.Subtitles,
+                icon = Icons.Rounded.Share,
                 label = null,
                 active = false,
                 flourish = null,
                 shape = RoundedCornerShape(22.dp),
-                description = stringResource(R.string.player_transcript),
-            ) { state.sheet = PlayerSheet.Transcript }
+                description = stringResource(R.string.player_share),
+                horizontalPadding = pillPad,
+            ) { item?.let { shareLink(context, "${TekuZone.BASE_URL}/video/${it.id}", it.title) } }
+            ActionPill(
+                icon = Icons.Rounded.Campaign,
+                label = null,
+                active = false,
+                flourish = null,
+                shape = RoundedCornerShape(22.dp),
+                description = "この動画を広告する",
+                horizontalPadding = pillPad,
+            ) {
+                if (!Account.signedIn) {
+                    state.actionMessage = "広告するにはログインが必要です"
+                } else if (item != null) {
+                    advertOpen = true
+                }
+            }
+            if (state.captions.tracks.isNotEmpty()) {
+                ActionPill(
+                    icon = Icons.Rounded.Subtitles,
+                    label = null,
+                    active = false,
+                    flourish = null,
+                    shape = RoundedCornerShape(22.dp),
+                    description = stringResource(R.string.player_transcript),
+                    horizontalPadding = pillPad,
+                ) { state.sheet = PlayerSheet.Transcript }
+            }
         }
     }
     if (advertOpen) {
@@ -1022,60 +1059,75 @@ private fun VideoMetadataChips(details: VideoDetails, state: PlayerState) {
                 },
             )
         }
-        AnimatedVisibility(
-            visible = editingTags,
-            enter = expandHorizontally(spring(dampingRatio = 0.7f, stiffness = 500f)) + fadeIn(tween(180)),
-            exit = shrinkHorizontally(spring(dampingRatio = 0.8f, stiffness = 500f)) + fadeOut(tween(150)),
-        ) {
-            Box(
-                modifier = Modifier
-                    .heightIn(min = 32.dp)
-                    .pressable(pressedScale = 0.94f) {
-                        newTagText = ""
-                        addDialogOpen = true
-                    }
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(c.primaryContainer)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center,
+        // Group the "+ 追加" chip and the trailing edit button into a single FlowRow item so
+        // FlowRow's spacedBy(6.dp) never holds a phantom 6 dp gap around an exiting 0 px
+        // AnimatedVisibility child (which caused the edit button to snap left after exit ended).
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AnimatedVisibility(
+                visible = editingTags,
+                enter = expandHorizontally(
+                    animationSpec = spring(dampingRatio = 0.85f, stiffness = 500f),
+                    expandFrom = Alignment.End,
+                ) + fadeIn(tween(180)),
+                exit = shrinkHorizontally(
+                    animationSpec = spring(dampingRatio = 1f, stiffness = 500f),
+                    shrinkTowards = Alignment.End,
+                ) + fadeOut(tween(130)),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Rounded.Add,
-                        contentDescription = "タグを追加",
-                        tint = c.onPrimaryContainer,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.width(3.dp))
-                    Text(
-                        "追加",
-                        color = c.onPrimaryContainer,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
+                Box(modifier = Modifier.padding(end = 6.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .heightIn(min = 32.dp)
+                            .pressable(pressedScale = 0.94f) {
+                                newTagText = ""
+                                addDialogOpen = true
+                            }
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(c.primaryContainer)
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.Add,
+                                contentDescription = "タグを追加",
+                                tint = c.onPrimaryContainer,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                "追加",
+                                color = c.onPrimaryContainer,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
                 }
             }
-        }
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .pressable(pressedScale = 0.92f) {
-                    if (!Account.signedIn) {
-                        state.actionMessage = "タグを編集するにはログインが必要です"
-                    } else {
-                        editingTags = !editingTags
+            val editBg by animateColorAsState(if (editingTags) c.primary else c.surfaceContainerHigh, label = "tagEditBg")
+            val editTint by animateColorAsState(if (editingTags) c.onPrimary else c.onSurfaceVariant, label = "tagEditTint")
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .pressable(pressedScale = 0.92f) {
+                        if (!Account.signedIn) {
+                            state.actionMessage = "タグを編集するにはログインが必要です"
+                        } else {
+                            editingTags = !editingTags
+                        }
                     }
-                }
-                .clip(RoundedCornerShape(14.dp))
-                .background(if (editingTags) c.primary else c.surfaceContainerHigh),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                if (editingTags) Icons.Rounded.Check else Icons.Rounded.Edit,
-                contentDescription = if (editingTags) "タグ編集を完了" else "タグを編集",
-                tint = if (editingTags) c.onPrimary else c.onSurfaceVariant,
-                modifier = Modifier.size(16.dp),
-            )
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(editBg),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (editingTags) Icons.Rounded.Check else Icons.Rounded.Edit,
+                    contentDescription = if (editingTags) "タグ編集を完了" else "タグを編集",
+                    tint = editTint,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
         }
     }
 
@@ -1155,13 +1207,21 @@ private fun MetaSearchChip(
     onRemove: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
+    val endPad by animateDpAsState(
+        targetValue = when {
+            editing && onRemove != null -> 8.dp
+            bgImage != null -> 18.dp
+            else -> 12.dp
+        },
+        animationSpec = spring(dampingRatio = 1f, stiffness = 500f),
+        label = "chipEndPad",
+    )
     Box(
         modifier = Modifier
             .heightIn(min = 32.dp)
             .pressable(pressedScale = 0.96f, onClick = onClick)
             .clip(RoundedCornerShape(14.dp))
-            .background(bg)
-            .animateContentSize(spring(dampingRatio = 0.7f, stiffness = 500f)),
+            .background(bg),
         contentAlignment = Alignment.Center,
     ) {
         if (bgImage != null) {
@@ -1181,11 +1241,7 @@ private fun MetaSearchChip(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(
                 start = 12.dp,
-                end = when {
-                    editing && onRemove != null -> 8.dp
-                    bgImage != null -> 18.dp
-                    else -> 12.dp
-                },
+                end = endPad,
                 top = 6.dp,
                 bottom = 6.dp,
             ),
@@ -1200,8 +1256,14 @@ private fun MetaSearchChip(
             )
             AnimatedVisibility(
                 visible = editing && onRemove != null,
-                enter = expandHorizontally(spring(dampingRatio = 0.7f, stiffness = 500f)) + fadeIn(tween(180)),
-                exit = shrinkHorizontally(spring(dampingRatio = 0.8f, stiffness = 500f)) + fadeOut(tween(150)),
+                enter = expandHorizontally(
+                    animationSpec = spring(dampingRatio = 0.85f, stiffness = 500f),
+                    expandFrom = Alignment.End,
+                ) + fadeIn(tween(180)),
+                exit = shrinkHorizontally(
+                    animationSpec = spring(dampingRatio = 1f, stiffness = 500f),
+                    shrinkTowards = Alignment.End,
+                ) + fadeOut(tween(130)),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Spacer(Modifier.width(5.dp))
@@ -1227,7 +1289,7 @@ private fun MetaSearchChip(
 
 /** Techniclip Zone 3軸評価 (音声・映像・発想) + 再生リスト保存. */
 @Composable
-private fun AccountActions(state: PlayerState) {
+private fun AccountActions(state: PlayerState, horizontalPadding: Dp = 16.dp) {
     val ratings = state.details?.ratings ?: VideoRatings()
     val rated = state.details?.ratedCategories ?: RatedCategories()
 
@@ -1240,6 +1302,7 @@ private fun AccountActions(state: PlayerState) {
             labelRollsUp = true,
             shape = RoundedCornerShape(topStart = 22.dp, bottomStart = 22.dp, topEnd = 7.dp, bottomEnd = 7.dp),
             description = "音声を評価",
+            horizontalPadding = horizontalPadding,
         ) { state.toggleRate("audio") }
 
         ActionPill(
@@ -1250,6 +1313,7 @@ private fun AccountActions(state: PlayerState) {
             labelRollsUp = true,
             shape = RoundedCornerShape(7.dp),
             description = "映像を評価",
+            horizontalPadding = horizontalPadding,
         ) { state.toggleRate("visual") }
 
         ActionPill(
@@ -1260,6 +1324,7 @@ private fun AccountActions(state: PlayerState) {
             labelRollsUp = true,
             shape = RoundedCornerShape(topStart = 7.dp, bottomStart = 7.dp, topEnd = 22.dp, bottomEnd = 22.dp),
             description = "発想を評価",
+            horizontalPadding = horizontalPadding,
         ) { state.toggleRate("idea") }
     }
 
@@ -1271,6 +1336,7 @@ private fun AccountActions(state: PlayerState) {
             flourish = null,
             shape = RoundedCornerShape(22.dp),
             description = stringResource(R.string.player_save_to_playlist),
+            horizontalPadding = horizontalPadding,
         ) { state.current?.let(state::openPlaylists) }
     }
 }
@@ -1285,6 +1351,7 @@ private fun ActionPill(
     shape: androidx.compose.ui.graphics.Shape,
     description: String,
     labelRollsUp: Boolean = true,
+    horizontalPadding: Dp = 16.dp,
     onClick: () -> Unit,
 ) {
     val c = MaterialTheme.colorScheme
@@ -1298,7 +1365,7 @@ private fun ActionPill(
             // background(shape), not clip: the like sparks may fly past the pill's edge.
             .background(bg, shape)
             .animateContentSize(spring(dampingRatio = 0.7f, stiffness = 500f))
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = horizontalPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (flourish == null) Icon(icon, description, tint = tint, modifier = Modifier.size(20.dp))

@@ -99,11 +99,12 @@ private fun RailTab(tab: Tab, selected: Boolean, onClick: () -> Unit) {
         Spacer(Modifier.height(4.dp))
         Text(
             tab.label,
-            fontSize = 11.5.sp,
+            fontSize = 11.sp,
             fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Bold,
             color = if (selected) c.onSurface else c.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 4.dp),
         )
     }
 }

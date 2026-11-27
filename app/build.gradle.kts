@@ -21,8 +21,8 @@ android {
         applicationId = "com.techniclip.zone.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1001
-        versionName = "1.0.1"
+        versionCode = 1002
+        versionName = "1.0.2"
     }
 
     signingConfigs {
@@ -42,9 +42,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = if (keystorePropsFile.exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
-            // ML Kit's translator (captions) is the app's only native code, ~16 MB per CPU type: phones only
-            // (64- and 32-bit ARM). Debug keeps x86 for the emulator.
-            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+            // Include x86_64 alongside ARM so the same release APK runs natively on both phones / XR
+            // headsets (arm64-v8a, armeabi-v7a) and x86_64 PC Android XR emulators (OpenXR/Impress JNI).
+            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -85,9 +85,18 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // Android XR (Jetpack XR SDK: Subspace, SpatialPanel, Orbiters, Material 3 XR).
+    implementation("androidx.xr.runtime:runtime:1.1.0-alpha02")
+    implementation("androidx.xr.scenecore:scenecore:1.1.0-alpha01")
+    implementation("androidx.xr.compose:compose:1.0.0-beta02")
+    implementation("androidx.xr.compose.material3:material3:1.0.0-alpha17")
+    compileOnly("com.android.extensions.xr:extensions-xr:1.4.0")
 
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-exoplayer-dash:$media3")

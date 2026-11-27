@@ -317,7 +317,9 @@ private val GridCardMin = 280.dp
 @Composable
 fun gridColumns(): Int {
     val window = LocalWindowLayout.current
-    val width = LocalConfiguration.current.screenWidthDp.dp - if (window.wide) RailWidth else 0.dp
+    // In XR Full Space, NavRail floats in a Start Orbiter outside the main panel, so the full browse panel width is available.
+    val baseWidth = if (window.spatialUi) XrBrowsePanelWidth else LocalConfiguration.current.screenWidthDp.dp
+    val width = baseWidth - if (window.wide && !window.spatialUi) RailWidth else 0.dp
     // A TV is seen from across the room at 960 dp: four a row, as TV apps do (three at 280 looked like a tablet's).
     return (width / if (window.tv) TvCardMin else GridCardMin).toInt().coerceIn(if (window.wide) 2 else 1, 4)
 }

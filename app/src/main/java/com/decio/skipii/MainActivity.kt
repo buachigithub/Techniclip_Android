@@ -121,6 +121,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.xr.compose.material3.EnableXrComponentOverrides
+import androidx.xr.compose.material3.ExperimentalMaterial3XrApi
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -143,14 +145,17 @@ class MainActivity : ComponentActivity() {
         current = WeakReference(this)
         enableEdgeToEdge()
         // The media notification (and its lock-screen controls) needs this on Android 13+.
+        // On Android XR, launching GrantPermissionsActivity synchronously during onCreate blocks
+        // the initial Full Space scene transaction; defer it until after the spatial UI settles.
         if (Build.VERSION.SDK_INT >= 33 &&
+            !isXrDevice() &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         NewVideos.takeVideo(intent)?.let { NewVideos.opening = it }
         LiveControls.takeOpen(intent)
-        setContent { SkipiiTheme { SkipiiApp() } }
+        setContent { SkipiiTheme { XrAppHost() } }
     }
 
     /** A new-video notification tapped while this window is open (singleTop). */
@@ -196,6 +201,14 @@ enum class Tab(@StringRes val labelRes: Int, val icon: ImageVector, val selected
 private val MiniWidth = 368.dp
 private val MiniGap = 8.dp
 
+@OptIn(ExperimentalMaterial3XrApi::class)
+@Composable
+private fun XrAppHost() {
+    EnableXrComponentOverrides {
+        SkipiiApp()
+    }
+}
+
 @Composable
 fun SkipiiApp() {
     val c = MaterialTheme.colorScheme
@@ -225,6 +238,8 @@ fun SkipiiApp() {
     val wide = windowLayout.wide
     // A TV (Tv.kt): the remote drives everything, and the open player is always TvPlayer, across the screen.
     val tv = windowLayout.tv
+    // Android XR Full Space (Xr.kt): spatial panels and floating Orbiters in 3D space.
+    val spatialUi = windowLayout.spatialUi
     DisposableEffect(shorts) { onDispose { if (!host.isChangingConfigurations) shorts.leave() } }
     var shortsFrom by rememberSaveable { mutableStateOf(Tab.Home) }
     // A short tapped on a channel page plays in Shorts among that channel's shorts; ‹ / Back return to
@@ -307,14 +322,17 @@ fun SkipiiApp() {
     // On Shorts the app's video waits, paused, out of sight (no mini-player).
     val hasMini = player.current != null && tab != Tab.Shorts
     // Lists scroll fully clear of the floating nav (and mini-player when present). A wide window
-    // has the rail instead of the nav; only the mini-player card (bottom right) needs clearing.
-    val contentPadding = if (wide) PaddingValues(bottom = stackBottom + (if (hasMini) MiniHeight + MiniGap else 0.dp) + 16.dp)
-    else PaddingValues(
-        bottom = stackBottom + NavHeight + (if (hasMini) MiniHeight + MiniGap else 0.dp) + 16.dp,
-    )
-    // On a wide window the pages start right of the rail (none on Shorts: a short takes the whole height).
+    // has the rail instead of the nav; in XR Full Space the rail and mini-player float in Orbiters.
+    val contentPadding = when {
+        spatialUi -> PaddingValues(bottom = 24.dp)
+        wide -> PaddingValues(bottom = stackBottom + (if (hasMini) MiniHeight + MiniGap else 0.dp) + 16.dp)
+        else -> PaddingValues(
+            bottom = stackBottom + NavHeight + (if (hasMini) MiniHeight + MiniGap else 0.dp) + 16.dp,
+        )
+    }
+    // On a wide window the pages start right of the rail (none on Shorts or XR Full Space, where the rail is an Orbiter).
     val railStart = WindowInsets.safeDrawing.only(WindowInsetsSides.Start).asPaddingValues().calculateStartPadding(LayoutDirection.Ltr)
-    val showRail = wide && tab != Tab.Shorts
+    val showRail = wide && !spatialUi && tab != Tab.Shorts
     val pagesStart = if (showRail) RailWidth + railStart else 0.dp
 
     // Fullscreen is whenever the open player is shown in landscape (rotation or button).
@@ -445,13 +463,22 @@ fun SkipiiApp() {
         shorts.mainBusy = { player.isBuffering }
     }
 
+    // Smooth in-panel reveal for XR Full Space so Watch <-> Home glides inside the single persistent
+    // SpatialPanel without ever tearing down the panel or flashing blank.
+    val xrPlayerReveal by animateFloatAsState(
+        targetValue = if (spatialUi && player.current != null && player.expanded) 1f else 0f,
+        animationSpec = if (reduced) snap() else spring(dampingRatio = 0.88f, stiffness = 420f),
+        label = "xrPlayerReveal",
+    )
     // Taps, back and opening a video set `expanded`; this turns that into the morph.
     // Gesture releases settle themselves and are left alone (see PlayerMorph.animateTo).
-    LaunchedEffect(player.expanded, player.current?.id) {
+    LaunchedEffect(player.expanded, player.current?.id, spatialUi, xrPlayerReveal > 0.01f) {
         when {
             player.current == null -> morph.progress.snapTo(0f)
-            // No morph on a TV: the player opens across the screen and closes to the corner card at once.
+            // No 2D morph on a TV: the player opens across the screen and closes to the corner card at once.
             tv -> morph.progress.snapTo(if (player.expanded) 1f else 0f)
+            // XR Full Space keeps morph at 1f while xrPlayerReveal animates the slide/fade out cleanly.
+            spatialUi -> morph.progress.snapTo(if (player.expanded || xrPlayerReveal > 0.01f) 1f else 0f)
             else -> morph.animateTo(player.expanded, reduced)
         }
     }
@@ -478,82 +505,103 @@ fun SkipiiApp() {
     SideEffect { shorts.cover(tab == Tab.Shorts && openChannel != null) }
     BackHandler(enabled = tab == Tab.Shorts && shorts.channelMenu) { shorts.channelMenu = false }
 
-    BoxWithConstraints(Modifier.fillMaxSize().background(c.surface)) {
-        // The open player's shape on this window (PlayerUi.kt): the phone page, or on a wide window
-        // Rail 3 — beside the rail on a tablet; across the whole screen, split at the fold, on an
-        // open foldable (option B: More videos on the left page, the rest on the right).
-        val endInset = WindowInsets.safeDrawing.only(WindowInsetsSides.End).asPaddingValues().calculateEndPadding(LayoutDirection.Ltr)
-        val playerLayout = when {
-            !wide -> PlayerLayout.Phone
-            windowLayout.foldX != null -> PlayerLayout.Book(with(density) { windowLayout.foldX.toDp() })
-            else -> PlayerLayout.Tablet(moreWidth = ((maxWidth - RailWidth - railStart) * 0.38f).coerceIn(300.dp, 460.dp))
-        }
-        // The player sits right of the rail on a tablet (the rail stays to leave by); elsewhere it takes the screen.
-        val playerStart = if (playerLayout is PlayerLayout.Tablet) RailWidth + railStart else 0.dp
-        // How wide the video is: the left pane on a tablet, the whole screen otherwise.
-        val stageWidth = when (playerLayout) {
-            is PlayerLayout.Tablet -> maxWidth - playerStart - playerLayout.moreWidth
-            else -> maxWidth
-        }
-        val stageFloor = maxOf(StageMinAspect, stageWidth / (maxHeight * StageMaxHeightShare))
-        SideEffect { player.stageFloor = stageFloor }
-        // Both ends of the morph, from the same constants the mini-player and player use.
-        val stageAspect = player.stageAspect
-        val geometry = remember(constraints.maxWidth, constraints.maxHeight, stackBottom, statusTop, density, stageAspect, wide, playerStart, stageWidth, endInset) {
-            with(density) {
-                // In the player's own space (it starts [playerStart] in on a tablet).
-                val left = playerStart.toPx()
-                val w = constraints.maxWidth.toFloat() - left
-                val h = constraints.maxHeight.toFloat()
-                // Wide: the mini-player is a card in the bottom-right corner (no tab pill under it).
-                val miniBottom = if (wide) h - stackBottom.toPx() else h - (stackBottom + NavHeight + MiniGap).toPx()
-                val miniW = minOf(w - 32.dp.toPx(), MiniWidth.toPx())
-                val miniLeft = if (wide) w - (16.dp + endInset).toPx() - miniW else (w - miniW) / 2f
-                val miniCard = Rect(miniLeft, miniBottom - MiniHeight.toPx(), miniLeft + miniW, miniBottom)
-                val thumb = Rect(
-                    Offset(miniCard.left + MiniThumbStart.toPx(), miniCard.top + (MiniHeight - MiniThumbHeight).toPx() / 2f),
-                    Size(MiniThumbWidth.toPx(), MiniThumbHeight.toPx()),
-                )
-                val side = StageSideGap.toPx()
-                val stageTop = (statusTop + StageTopGap).toPx()
-                val sw = stageWidth.toPx()
-                val stage = Rect(side, stageTop, sw - side, stageTop + (sw - 2 * side) / stageAspect)
-                MorphGeometry(
-                    screen = Size(w, h),
-                    miniCard = miniCard,
-                    miniThumb = thumb,
-                    stage = stage,
-                    miniRadius = MiniRadius.toPx(),
-                    thumbRadius = MiniThumbRadius.toPx(),
-                    stageRadius = StageRadius.toPx(),
-                )
-            }
-        }
-        SideEffect { morph.geometry = geometry }
-
-        // One video surface that moves between player, fullscreen and mini-player (never two
-        // at once), so the picture is never rebuilt and never blinks back to the thumbnail.
-        val sharedSurface = remember(player) {
-            androidx.compose.runtime.movableContentOf { m: Modifier -> VideoSurface(player.controller, m) }
-        }
-        CompositionLocalProvider(
-            // In picture-in-picture only the PiP view below shows the video.
-            LocalVideoSurface provides if (pip.active) NoVideoSurface else sharedSurface,
-            LocalPictureInPicture provides pip,
-            LocalVideoMenu provides { optionsFor = it },
-            LocalChannelOpener provides { url -> showChannel(url) },
-            LocalTagSearch provides { q ->
-                player.sheet = null
-                player.expanded = false
-                openPlaylist = null
-                openChannel = null
-                tab = Tab.Search
-                search.query = q
-                search.submit()
-            },
-            LocalWindowLayout provides windowLayout,
-        ) {
-        Box(Modifier.padding(start = pagesStart)) {
+    // One video surface that moves between player, fullscreen and mini-player (never two
+    // at once), so the picture is never rebuilt and never blinks back to the thumbnail.
+    val sharedSurface = remember(player) {
+        androidx.compose.runtime.movableContentOf { m: Modifier -> VideoSurface(player.controller, m) }
+    }
+    CompositionLocalProvider(
+        // In picture-in-picture only the PiP view below shows the video.
+        // In XR Full Space, each SpatialPanel/Orbiter is its own Compose Owner, so movableContentOf
+        // cannot move an AndroidView LayoutNode across them; VideoSurface already reuses SharedVideoTexture.
+        LocalVideoSurface provides when {
+            pip.active -> NoVideoSurface
+            spatialUi -> { m -> VideoSurface(player.controller, m) }
+            else -> sharedSurface
+        },
+        LocalPictureInPicture provides pip,
+        LocalVideoMenu provides { optionsFor = it },
+        LocalChannelOpener provides { url -> showChannel(url) },
+        LocalTagSearch provides { q ->
+            player.sheet = null
+            player.expanded = false
+            openPlaylist = null
+            openChannel = null
+            tab = Tab.Search
+            search.query = q
+            search.submit()
+        },
+        LocalWindowLayout provides windowLayout,
+    ) {
+        @Composable
+        fun MainPanelContent() {
+            BoxWithConstraints(Modifier.fillMaxSize().background(c.surface)) {
+                // The open player's shape on this window (PlayerUi.kt): the phone page, or on a wide window
+                // Rail 3 — beside the rail on a tablet; across the whole screen, split at the fold, on an
+                // open foldable (option B: More videos on the left page, the rest on the right).
+                // On Android XR Full Space, XrMain puts video+details here and More videos/Comments in the companion SpatialPanel.
+                val endInset = WindowInsets.safeDrawing.only(WindowInsetsSides.End).asPaddingValues().calculateEndPadding(LayoutDirection.Ltr)
+                val foldLeftDp = windowLayout.foldBoundsX?.let { with(density) { it.start.toDp() } }
+                val foldRightDp = windowLayout.foldBoundsX?.let { with(density) { it.endInclusive.toDp() } }
+                val hingeGapDp = if (foldLeftDp != null && foldRightDp != null) (foldRightDp - foldLeftDp).coerceAtLeast(0.dp) else 0.dp
+                // Keep the bottom-right mini-player cleanly inside the right half of a book-style foldable so
+                // its thumbnail never straddles the vertical crease.
+                val miniMaxWidth = if (foldRightDp != null) {
+                    minOf(MiniWidth, (maxWidth - foldRightDp - 24.dp - endInset).coerceAtLeast(240.dp))
+                } else {
+                    MiniWidth
+                }
+                val playerLayout = when {
+                    spatialUi -> PlayerLayout.XrMain
+                    !wide -> PlayerLayout.Phone
+                    foldLeftDp != null -> PlayerLayout.Book(foldLeftDp, hingeGap = hingeGapDp, halfOpen = windowLayout.foldHalfOpen)
+                    else -> PlayerLayout.Tablet(moreWidth = ((maxWidth - RailWidth - railStart) * 0.38f).coerceIn(300.dp, 460.dp))
+                }
+                // The player sits right of the rail on a tablet (the rail stays to leave by); elsewhere it takes the screen.
+                val playerStart = if (playerLayout is PlayerLayout.Tablet) RailWidth + railStart else 0.dp
+                // How wide the video is: the left pane on a tablet or half-open book foldable, the whole screen otherwise.
+                val stageWidth = when (playerLayout) {
+                    is PlayerLayout.Tablet -> maxWidth - playerStart - playerLayout.moreWidth
+                    is PlayerLayout.Book -> if (playerLayout.halfOpen) playerLayout.foldX else maxWidth
+                    else -> maxWidth
+                }
+                val stageFloor = maxOf(StageMinAspect, stageWidth / (maxHeight * StageMaxHeightShare))
+                SideEffect { player.stageFloor = stageFloor }
+                // Both ends of the morph, computed synchronously from the current orientation's stageFloor
+                // so orientation/posture changes never lag a frame with stale stage dimensions.
+                val stageAspect = player.videoAspect.coerceIn(StageMinAspect, StageMaxAspect).coerceAtLeast(stageFloor)
+                val geometry = remember(constraints.maxWidth, constraints.maxHeight, stackBottom, statusTop, density, stageAspect, wide, playerStart, stageWidth, endInset, miniMaxWidth) {
+                    with(density) {
+                        // In the player's own space (it starts [playerStart] in on a tablet).
+                        val left = playerStart.toPx()
+                        val w = constraints.maxWidth.toFloat() - left
+                        val h = constraints.maxHeight.toFloat()
+                        // Wide: the mini-player is a card in the bottom-right corner (no tab pill under it).
+                        val miniBottom = if (wide) h - stackBottom.toPx() else h - (stackBottom + NavHeight + MiniGap).toPx()
+                        val miniW = minOf(w - 32.dp.toPx(), miniMaxWidth.toPx())
+                        val miniLeft = if (wide) w - (16.dp + endInset).toPx() - miniW else (w - miniW) / 2f
+                        val miniCard = Rect(miniLeft, miniBottom - MiniHeight.toPx(), miniLeft + miniW, miniBottom)
+                        val thumb = Rect(
+                            Offset(miniCard.left + MiniThumbStart.toPx(), miniCard.top + (MiniHeight - MiniThumbHeight).toPx() / 2f),
+                            Size(MiniThumbWidth.toPx(), MiniThumbHeight.toPx()),
+                        )
+                        val side = StageSideGap.toPx()
+                        val stageTop = (statusTop + StageTopGap).toPx()
+                        val sw = stageWidth.toPx()
+                        val stage = Rect(side, stageTop, sw - side, stageTop + (sw - 2 * side) / stageAspect)
+                        MorphGeometry(
+                            screen = Size(w, h),
+                            miniCard = miniCard,
+                            miniThumb = thumb,
+                            stage = stage,
+                            miniRadius = MiniRadius.toPx(),
+                            thumbRadius = MiniThumbRadius.toPx(),
+                            stageRadius = StageRadius.toPx(),
+                        )
+                    }
+                }
+                SideEffect { morph.geometry = geometry }
+                Box(Modifier.padding(start = pagesStart)) {
         AnimatedContent(
             targetState = tab,
             transitionSpec = {
@@ -582,7 +630,7 @@ fun SkipiiApp() {
                     shorts, { shortsMorph.value }, overlayBottom = stackBottom + GlassHeight + 16.dp,
                     shortFocus = shortFocus, barFocus = if (tv) shortsBarFocus else null,
                     landscape = landscape,
-                    onToggleOrientation = if (tv) null else { { orientation.toggleLandscape(landscape) } },
+                    onToggleOrientation = if (tv || orientation.largeScreen || windowLayout.tabletopY != null || windowLayout.xr) null else { { orientation.toggleLandscape(landscape) } },
                 )
                 Tab.Search -> SearchScreen(search, contentPadding, onOpen = player::open, scrollToTop = scrollToTop[Tab.Search] ?: 0)
                 Tab.Library -> LibraryScreen(
@@ -654,7 +702,7 @@ fun SkipiiApp() {
         // Swiping home from here never scrolls the page (the tab bar above still wins its taps).
         BottomGestureGuard(Modifier.align(Alignment.BottomCenter))
 
-        if (hasMini) {
+        if (hasMini && !spatialUi) {
             // Swipe up expands (the morph); swipe down follows the finger and, past a
             // threshold or with a flick, slides the mini-player away and stops playback.
             val dismiss = remember { androidx.compose.animation.core.Animatable(0f) }
@@ -668,7 +716,7 @@ fun SkipiiApp() {
                     // Wide: a card in the bottom-right corner (no tab pill under it; the rail has the tabs).
                     .align(if (wide) Alignment.BottomEnd else Alignment.BottomCenter)
                     .padding(start = 16.dp, end = 16.dp + if (wide) endInset else 0.dp, bottom = if (wide) stackBottom else stackBottom + NavHeight + MiniGap)
-                    .widthIn(max = MiniWidth)
+                    .widthIn(max = miniMaxWidth)
                     // Fades as the video grows out of it; slides and fades as it's dismissed.
                     .graphicsLayer {
                         translationY = dismiss.value + settingsAway * (MiniHeight + MiniGap + NavHeight + stackBottom + 24.dp).toPx()
@@ -708,15 +756,31 @@ fun SkipiiApp() {
         }
 
         // The player morphs out of (and back into) the mini-player; see PlayerMorph.
-        if (showPlayer && !showFullscreen && !tabletop && !tv) {
-            Box(Modifier.padding(start = playerStart)) {
+        // In XR Full Space, PlayerScreen fades & glides smoothly over the already-rendered Home screen
+        // inside the same persistent SpatialPanel (zero blank flash on minimize).
+        val renderPlayer = if (spatialUi) player.current != null && (player.expanded || xrPlayerReveal > 0.01f) else showPlayer
+        if (renderPlayer && !showFullscreen && !tabletop && !tv) {
+            Box(
+                Modifier
+                    .padding(start = playerStart)
+                    .then(
+                        if (!spatialUi) Modifier else Modifier.graphicsLayer {
+                            val p = xrPlayerReveal.coerceIn(0f, 1f)
+                            alpha = p
+                            val s = 0.94f + 0.06f * p
+                            scaleX = s
+                            scaleY = s
+                            translationY = (1f - p) * 44.dp.toPx()
+                        },
+                    ),
+            ) {
                 PlayerScreen(
                     player, morph,
                     onOpen = player::open,
                     onCollapse = { player.expanded = false },
                     onFullscreen = { toggleFullscreen() },
-                    // With the controls on the video there's no bar over the player (it steps down below).
-                    bottomClearance = if (PlayerControls.inBar) stackBottom + NavHeight + PlayerBarRaise + 16.dp else stackBottom + 16.dp,
+                    // With the controls on the video or in XR's bottom Orbiter there's no bar over the player.
+                    bottomClearance = if (PlayerControls.inBar && !spatialUi) stackBottom + NavHeight + PlayerBarRaise + 16.dp else stackBottom + 16.dp,
                     layout = playerLayout,
                     statusBleed = playerStart,
                 )
@@ -747,36 +811,52 @@ fun SkipiiApp() {
                 },
             )
         }
-        // A wide window has the rail for its tabs, so there the pill is only ever the open player's bar,
-        // centred on the screen as everywhere (Derek, 2026-11-02). It fades in as the player opens.
-        if (!tabletop && !tv && (!wide || (PlayerControls.inBar && showPlayer && !showFullscreen))) Box(Modifier.fillMaxSize()) {
-        NavPill(
-            selected = tab,
-            onSelect = ::selectTab,
-            player = player,
-            morph = morph,
-            controlsActive = PlayerControls.inBar && player.current != null && (player.expanded || morph.dragging),
-            bar = playerBar,
-            onFullscreen = { toggleFullscreen() },
-            shorts = { shortsMorph.value },
-            tabsEnabled = !shortsShown && !wide,
-            // The fade is the bar's own (NavPill puts it on the bar's layer): alpha on this slot-sized
-            // layer would crop the player's bar, which stands taller than the slot.
-            fade = { (1f - navAway()) * if (wide) ramp(morph.progress.value, 0.55f, 0.95f) else 1f },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(start = 16.dp, end = 16.dp, bottom = stackBottom)
-                .graphicsLayer {
-                    // Moved fully off screen, so it can't catch touches meant for the composer.
-                    translationY = navAway() * (NavHeight + PlayerBarRaise + stackBottom + 24.dp).toPx()
-                },
-        )
+        // A wide window has the rail for its tabs, so there the pill is only ever the open player's bar.
+        // Dock the player bar cleanly inside the video+details pane on both book foldables (left page)
+        // and landscape tablets/foldables (middle column) so it never straddles the hinge or covers More videos.
+        // In XR Full Space, both the nav rail and playback controls float in spatial Orbiters instead.
+        if (!tabletop && !tv && !spatialUi && (!wide || (PlayerControls.inBar && showPlayer && !showFullscreen))) {
+            val pillHost = when {
+                wide && foldLeftDp != null && foldLeftDp >= CompactBarWidth + 8.dp ->
+                    Modifier.align(Alignment.BottomStart).width(foldLeftDp).fillMaxHeight()
+                playerLayout is PlayerLayout.Tablet && stageWidth >= CompactBarWidth + 8.dp ->
+                    Modifier.align(Alignment.BottomStart).padding(start = playerStart, end = playerLayout.moreWidth).fillMaxSize()
+                else ->
+                    Modifier.fillMaxSize()
+            }
+            val pillHorizPad = if (wide && (foldLeftDp != null || playerLayout is PlayerLayout.Tablet)) 8.dp else 16.dp
+            Box(pillHost) {
+                NavPill(
+                    selected = tab,
+                    onSelect = ::selectTab,
+                    player = player,
+                    morph = morph,
+                    controlsActive = PlayerControls.inBar && player.current != null && (player.expanded || morph.dragging),
+                    bar = playerBar,
+                    onFullscreen = { toggleFullscreen() },
+                    shorts = { shortsMorph.value },
+                    tabsEnabled = !shortsShown && !wide,
+                    // The fade is the bar's own (NavPill puts it on the bar's layer): alpha on this slot-sized
+                    // layer would crop the player's bar, which stands taller than the slot.
+                    fade = { (1f - navAway()) * if (wide) ramp(morph.progress.value, 0.55f, 0.95f) else 1f },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = pillHorizPad, end = pillHorizPad, bottom = stackBottom)
+                        .graphicsLayer {
+                            // Moved fully off screen, so it can't catch touches meant for the composer.
+                            translationY = navAway() * (NavHeight + PlayerBarRaise + stackBottom + 24.dp).toPx()
+                        },
+                )
+            }
         }
 
         // The tab bar's Shorts form: ‹ and the glass pill, out of the tab bar's own spot. It steps
         // down out of the way of the comments panel (its composer sits there), as the player's bar does.
-        // Wide windows: the glass bar (and its channel card) stand in the margin beside the short (Shorts.kt).
-        val shortsSide = shortsMargin(windowLayout, maxWidth, maxHeight)
+        // Wide windows: the glass bar (and its channel card) stand in the margin beside a vertical short
+        // (or on the right page of a book foldable), and full-width centered for landscape shorts or Tabletop.
+        val currentShortId = shorts.current?.id
+        val currentShortAspect = currentShortId?.let { shorts.aspects[it] ?: shorts.details[it]?.aspect } ?: (9f / 16f)
+        val shortsSide = shortsMargin(windowLayout, maxWidth, maxHeight, currentShortAspect, density)
         Box(Modifier.align(Alignment.BottomStart).padding(start = shortsSide?.first ?: 0.dp).width(shortsSide?.second ?: maxWidth).fillMaxHeight()) {
             if (shortsShown) {
                 val shortsAside by animateFloatAsState(
@@ -805,7 +885,17 @@ fun SkipiiApp() {
             if (shortsShown) ShortsChannelMenu(shorts, bottom = stackBottom + GlassHeight + 10.dp, onChannel = ::showChannel)
         }
 
-        if (showFullscreen) FullscreenPlayer(player, onExit = { orientation.exitFullscreen() })
+        if (spatialUi) {
+            AnimatedVisibility(
+                visible = showFullscreen,
+                enter = if (reduced) fadeIn(snap()) else fadeIn(tween(220)) + scaleIn(tween(240, easing = Motion.Emphasized), initialScale = 0.96f),
+                exit = if (reduced) fadeOut(snap()) else fadeOut(tween(180)) + scaleOut(tween(180), targetScale = 0.96f),
+            ) {
+                FullscreenPlayer(player, onExit = { orientation.exitFullscreen() })
+            }
+        } else if (showFullscreen) {
+            FullscreenPlayer(player, onExit = { orientation.exitFullscreen() })
+        }
         if (tv && playerOpen) TvPlayer(player, onClose = { player.expanded = false }, onOpen = player::open, onChannel = ::showChannel)
         windowLayout.tabletopY?.takeIf { tabletop }?.let { fold ->
             with(density) { TabletopPlayer(player, foldTop = fold.start.toDp(), foldBottom = fold.endInclusive.toDp()) }
@@ -862,6 +952,34 @@ fun SkipiiApp() {
                 }
             }
         }
+            }
+        }
+
+        if (spatialUi && !pip.active && !tv && !tabletop) {
+            XrSpatialShell(
+                selectedTab = tab,
+                tabs = Tab.entries.filter { it != Tab.Shorts || ShortsSetting.enabled },
+                onSelectTab = { t ->
+                    if (showFullscreen) orientation.exitFullscreen()
+                    if (player.expanded) player.expanded = false
+                    selectTab(t)
+                },
+                player = player,
+                shorts = shorts,
+                hasMini = hasMini,
+                playerOpen = player.current != null && player.expanded,
+                playerReveal = xrPlayerReveal,
+                showFullscreen = showFullscreen,
+                settingsOpen = settingsOpen,
+                signingIn = signingIn,
+                openChannel = openChannel,
+                onOpenVideo = player::open,
+                onToggleFullscreen = ::toggleFullscreen,
+                onExitFullscreen = { orientation.exitFullscreen() },
+                mainContent = { MainPanelContent() },
+            )
+        } else {
+            MainPanelContent()
         }
     }
 }

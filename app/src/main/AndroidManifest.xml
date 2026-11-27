@@ -12,10 +12,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
-    <!-- The same APK runs on Android TV / Google TV (Tv.kt): no touchscreen needed, and the TV's
-         launcher lists it (LEANBACK_LAUNCHER) with its banner. -->
+    <!-- The same APK runs on Android TV / Google TV (Tv.kt) and Android XR (Xr.kt): optional features
+         keep one APK installable across phones, tablets, foldables, TVs and XR headsets. -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.software.xr.api.spatial" android:required="false" />
 
     <application
         android:name=".SkipiiApplication"
@@ -34,9 +35,15 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:resizeableActivity="true"
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation"
             android:windowSoftInputMode="adjustResize|stateAlwaysHidden">
+            <!-- Android XR: launch directly into Full Space so spatial panels and orbiters appear immediately;
+                 users can toggle to Home Space at any time via the spatial controls orbiter. -->
+            <property
+                android:name="android.window.PROPERTY_XR_ACTIVITY_START_MODE"
+                android:value="XR_ACTIVITY_START_MODE_FULL_SPACE_MANAGED" />
             <!-- Not singleTask: a bubble needs its own task, and singleTask hands it the
                  app's one task instead (System UI kills it, or a later launch from Home
                  pulls it out of the bubble and leaves the bubble blank). MainActivity

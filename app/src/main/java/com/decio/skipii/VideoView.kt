@@ -1065,14 +1065,40 @@ private fun EdgeScrubPreview(state: PlayerState, edge: EdgeScrub) {
 /**
  * Lays the content out at [aspect], centred: as large as fits inside the incoming box, or
  * with [cover] as small as covers it (the overflow is for the caller to clip).
+ * Guards against non-finite/extreme aspects, transient zero bounds during rotation, and
+ * runaway cover zoom so orientation changes can never oversize the video surface.
  */
 fun Modifier.aspectFit(aspect: Float, cover: Boolean = false) = layout { measurable, constraints ->
-    val boxW = constraints.maxWidth.toFloat()
-    val boxH = if (constraints.hasBoundedHeight) constraints.maxHeight.toFloat() else boxW / aspect
+    val safeAspect = if (aspect.isFinite() && aspect > 0f) aspect.coerceIn(0.25f, 4f) else (16f / 9f)
+    val maxW = constraints.maxWidth
+    val maxH = constraints.maxHeight
+    if (maxW <= 0 || maxW == androidx.compose.ui.unit.Constraints.Infinity) {
+        val p = measurable.measure(constraints)
+        return@layout layout(p.width, p.height) { p.place(0, 0) }
+    }
+    val boxW = maxW.toFloat()
+    val boxH = if (constraints.hasBoundedHeight && maxH > 0) maxH.toFloat() else boxW / safeAspect
+    if (boxH <= 0f) {
+        val p = measurable.measure(constraints)
+        return@layout layout(p.width, p.height) { p.place(0, 0) }
+    }
     // Height decides when the box is wider than the content (fit) or narrower (cover).
-    val byHeight = (boxW / boxH > aspect) != cover
-    val w = (if (byHeight) boxH * aspect else boxW).roundToInt()
-    val h = (if (byHeight) boxH else boxW / aspect).roundToInt()
+    val byHeight = (boxW / boxH > safeAspect) != cover
+    var w = (if (byHeight) boxH * safeAspect else boxW).roundToInt().coerceAtLeast(1)
+    var h = (if (byHeight) boxH else boxW / safeAspect).roundToInt().coerceAtLeast(1)
+    if (!cover) {
+        w = w.coerceAtMost(maxW)
+        if (constraints.hasBoundedHeight) h = h.coerceAtMost(maxH)
+    } else {
+        // Hard safety cap: cover-cropping may never magnify past 1.35× container bounds.
+        val capW = (boxW * 1.35f).roundToInt().coerceAtLeast(1)
+        val capH = (boxH * 1.35f).roundToInt().coerceAtLeast(1)
+        if (w > capW || h > capH) {
+            val shrink = minOf(capW.toFloat() / w, capH.toFloat() / h)
+            w = (w * shrink).roundToInt().coerceAtLeast(1)
+            h = (h * shrink).roundToInt().coerceAtLeast(1)
+        }
+    }
     val placeable = measurable.measure(androidx.compose.ui.unit.Constraints.fixed(w, h))
     layout(boxW.roundToInt(), boxH.roundToInt()) {
         placeable.place(((boxW - w) / 2f).roundToInt(), ((boxH - h) / 2f).roundToInt())

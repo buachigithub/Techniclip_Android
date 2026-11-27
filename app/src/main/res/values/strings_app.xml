@@ -67,4 +67,13 @@
     <string name="app_live_channel_description">Playback controls while Skipii is off screen</string>
     <string name="app_live_back">−%1$s s</string>
     <string name="app_live_forward">+%1$s s</string>
+
+    <!-- Android XR spatial controls (Xr.kt) -->
+    <string name="xr_full_space">XR Space</string>
+    <string name="xr_home_space">Home Space</string>
+    <string name="xr_cinema_mode">Cinema</string>
+    <string name="xr_exit_cinema">Exit Cinema</string>
+    <string name="xr_theater_dim">Dim room</string>
+    <string name="xr_tab_related">Up next</string>
+    <string name="xr_tab_comments">Comments</string>
 </resources>

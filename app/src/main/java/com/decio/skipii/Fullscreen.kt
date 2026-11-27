@@ -66,13 +66,15 @@ class OrientationController(private val activity: ComponentActivity) {
     private var forced by mutableStateOf<Forced?>(null)
     private var playerOpen = false
 
+    /** An Android XR device (Xr.kt): always multi-window & landscape, so Cinema fullscreen is strictly user-toggled. */
+    private val xrDevice = activity.isXrDevice()
     var multiWindow by mutableStateOf(activity.isInMultiWindowMode)
         private set
     /** A tablet or an open foldable's inner screen ([onLargeScreen]). */
     var largeScreen by mutableStateOf(activity.onLargeScreen())
         private set
     /** The pane's or the large screen's own shape decides, not the phone's: fullscreen is a choice there. */
-    private val free get() = multiWindow || largeScreen
+    private val free get() = multiWindow || largeScreen || xrDevice
     /** Split screen: fullscreen chosen with the button; null follows the pane's shape. */
     private var paneFullscreen by mutableStateOf<Boolean?>(null)
     /** A near-square phone ([onSquareScreen]): fullscreen stays upright for every video. */
@@ -100,6 +102,8 @@ class OrientationController(private val activity: ComponentActivity) {
     /** Whether the open player shows fullscreen; [landscape] is the window's (pane's) shape. */
     fun showsFullscreen(playerOpen: Boolean, landscape: Boolean): Boolean = when {
         !playerOpen -> false
+        // Android XR reports multiWindow=true and landscape; fullscreen (Cinema) must only enter on demand.
+        xrDevice -> !AudioOnly.enabled && paneFullscreen == true
         // Audio only has no picture to fill the pane with.
         multiWindow -> !AudioOnly.enabled && (paneFullscreen ?: landscape)
         largeScreen -> !AudioOnly.enabled && paneFullscreen == true
@@ -158,9 +162,9 @@ class OrientationController(private val activity: ComponentActivity) {
             }
         }
         // A pane that changes shape (the divider dragged) starts over from its new shape. A large
-        // screen just turned keeps what was chosen.
+        // screen just turned (or an XR SpatialPanel resizing) keeps what was chosen.
         LaunchedEffect(landscape, multiWindow) {
-            if (multiWindow || !largeScreen) paneFullscreen = null
+            if (!xrDevice && (multiWindow || !largeScreen)) paneFullscreen = null
             // Turned sideways: from here it's landscape fullscreen, which turning back exits.
             if (landscape || multiWindow) portraitFullscreen = false
         }

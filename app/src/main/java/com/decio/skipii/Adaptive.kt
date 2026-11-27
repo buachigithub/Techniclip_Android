@@ -18,13 +18,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
+import androidx.xr.compose.platform.LocalSpatialCapabilities
+import androidx.xr.compose.platform.LocalSpatialConfiguration
+import androidx.xr.compose.platform.SpatialConfiguration
 
 /**
  * Big screens (Derek picked "Rail 3", with the Fold's pages swapped — option B — on 2026-11-02;
  * docs/design/large-screens-rail.html and large-screens-rail3-fold.html). A window [wide] enough
  * gets the tab rail on the left, grids, and the two-pane player. On an open book-style foldable
  * the player splits at the fold ([foldX]); half open on a table ([tabletopY]) the video takes the
- * top half and the controls the bottom half.
+ * top half and the controls the bottom half. On Android XR ([xr]), Full Space ([spatialUi]) lifts
+ * navigation and playback controls into spatial Orbiters and splits watch/comments into curved SpatialPanels.
  */
 @Immutable
 data class WindowLayout(
@@ -32,10 +36,18 @@ data class WindowLayout(
     val wide: Boolean = false,
     /** A fold running top to bottom through a wide window, px from its left edge. */
     val foldX: Float? = null,
+    /** Exact left..right px bounds of a vertical fold hinge, for hinge-aware split panes. */
+    val foldBoundsX: ClosedFloatingPointRange<Float>? = null,
+    /** True when a vertical fold is physically HALF_OPENED (book posture ~90°). */
+    val foldHalfOpen: Boolean = false,
     /** Half open with the fold running across the window (tabletop): the fold's top and bottom, px. */
     val tabletopY: ClosedFloatingPointRange<Float>? = null,
     /** An Android TV / Google TV: driven by a remote's D-pad, never touched ([TvPlayer], Tv.kt). */
     val tv: Boolean = false,
+    /** Running on an Android XR headset or wired XR glasses (Xr.kt). */
+    val xr: Boolean = false,
+    /** Android XR Full Space spatial UI is currently enabled (Subspace, SpatialPanel, Orbiters). */
+    val spatialUi: Boolean = false,
 )
 
 /** Medium width and up (Material's window size classes): the phone layout stops here. */
@@ -46,23 +58,37 @@ val LocalWindowLayout = compositionLocalOf { WindowLayout() }
 @Composable
 fun rememberWindowLayout(activity: Activity): WindowLayout {
     val config = LocalConfiguration.current
-    val wide = config.screenWidthDp >= WideWindow.value
+    val spatialUi = LocalSpatialCapabilities.current.isSpatialUiEnabled
+    val xrFeature = LocalSpatialConfiguration.current.hasXrSpatialFeature
+    val xr = remember(activity) { activity.isXrDevice() } || xrFeature
+    val wide = spatialUi || config.screenWidthDp >= WideWindow.value
     val flow = remember(activity) { WindowInfoTracker.getOrCreate(activity).windowLayoutInfo(activity) }
     val info by flow.collectAsState(initial = null)
     val fold = info?.displayFeatures?.filterIsInstance<FoldingFeature>()?.firstOrNull()
     val tv = remember(activity) { activity.isTv() }
-    return remember(wide, fold, tv) {
+    return remember(wide, fold, tv, xr, spatialUi) {
         val b = fold?.bounds
+        val verticalFold = wide && !spatialUi && fold?.orientation == FoldingFeature.Orientation.VERTICAL && b != null
         WindowLayout(
             wide = wide,
-            foldX = if (wide && fold?.orientation == FoldingFeature.Orientation.VERTICAL && b != null) b.exactCenterX() else null,
-            tabletopY = if (fold?.state == FoldingFeature.State.HALF_OPENED && fold.orientation == FoldingFeature.Orientation.HORIZONTAL && b != null) {
+            foldX = if (verticalFold) b!!.exactCenterX() else null,
+            foldBoundsX = if (verticalFold) b!!.left.toFloat()..b.right.toFloat() else null,
+            foldHalfOpen = verticalFold && fold?.state == FoldingFeature.State.HALF_OPENED,
+            tabletopY = if (!spatialUi && fold?.state == FoldingFeature.State.HALF_OPENED && fold.orientation == FoldingFeature.Orientation.HORIZONTAL && b != null) {
                 b.top.toFloat()..b.bottom.toFloat()
             } else null,
             tv = tv,
+            xr = xr,
+            spatialUi = spatialUi,
         )
     }
 }
+
+/** An Android XR device (headset or wired XR glasses): never portrait-locked, supports spatial UI in Full Space. */
+fun Context.isXrDevice(): Boolean =
+    runCatching { SpatialConfiguration.hasXrSpatialFeature(this) }.getOrDefault(false) ||
+        packageManager.hasSystemFeature("android.software.xr.api.spatial") ||
+        packageManager.hasSystemFeature("android.software.xr.api.openxr")
 
 /** A television (leanback): Android TV and Google TV both say so in their UI mode. */
 fun Context.isTv(): Boolean =
@@ -86,10 +112,10 @@ fun Activity.turnedSideways(): Boolean {
 }
 
 /**
- * A tablet or an open foldable (the screen's short side is wide-window size) or a TV (540 dp tall, but it
- * never turns): nothing is held portrait. A TV held portrait was pillarboxed to a phone-shaped strip.
+ * A tablet or an open foldable (the screen's short side is wide-window size), a TV (540 dp tall, but it
+ * never turns), or an Android XR device (spatial resizable windows): nothing is held portrait.
  */
-fun Activity.onLargeScreen(): Boolean = isTv() || screenSides().first / resources.displayMetrics.density >= WideWindow.value
+fun Activity.onLargeScreen(): Boolean = isTv() || isXrDevice() || screenSides().first / resources.displayMetrics.density >= WideWindow.value
 
 /** No more than 4:3 either way round (the Titan 2 Elite is 1080 × 1200, the Ikko Mind One about 1.15): fullscreen keeps the phone upright. */
 val SquareScreenRatio = 4f / 3f
