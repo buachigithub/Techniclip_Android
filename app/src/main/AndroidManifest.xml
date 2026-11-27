@@ -31,6 +31,12 @@
         android:supportsRtl="false"
         android:theme="@style/Theme.Skipii">
 
+        <!-- Jetpack XR SDK merges com.google.ar.core.min_apk_version; declare ARCore optional so
+             Google Play accepts the AAB and keeps the app installable on all phones, foldables, tablets, and TVs. -->
+        <meta-data
+            android:name="com.google.ar.core"
+            android:value="optional" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
